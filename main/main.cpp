@@ -9,28 +9,360 @@
 
 #include "pins_config.h"
 #include "jd9365_lcd.h"
+#include "driver/i2c.h"
+
+// 1. Dołączamy Twoje tablice z czcionkami bezpośrednio z folderu fonts
+#include "fonty.h"
+#include "boldfonts.h"
+
+// 2. Aktywujemy i dołączamy silnik stb_truetype
+#define STB_TRUETYPE_IMPLEMENTATION
+#include "stb_truetype.h"
+#include "esp_timer.h"
+//============================================================================================================
+//============================================================================================================
+//============================================================================================================
+
+// Wymuszenie dla kompilatora C++, aby traktował plik producenta jako kod C++ / C kompatybilny
+extern "C"
+{
 #include "gsl3680_touch.h"
+}
+
+#include "driver/i2c.h" // Potrzebne do konfiguracji magistrali
 
 jd9365_lcd lcd(LCD_RST);
 
 // JEDEN STAŁY BUFOR W PSRAM DLA CAŁEGO INTERFEJSU
 uint16_t *backbuffer = NULL;
-
+//============================================================================================================
+//============================================================================================================
+//============================================================================================================
 void safe_clear_screen(uint16_t color)
 {
-    // CAŁKOWITY RESET DO CZYSTEGO RGB565!
-    // Ponieważ driver ma sprzętowo ustawione LCD_RGB_ELEMENT_ORDER_RGB,
-    // podajemy kolor dokładnie taki, jaki wpisujemy w main.cpp!
     uint16_t raw_rgb_color = color;
-
-    // Wypełniamy całą tablicę bezpośrednio w PSRAM z pełną prędkością -O3
     size_t total_pixels = LCD_H_RES * LCD_V_RES;
     for (size_t i = 0; i < total_pixels; i++)
     {
         backbuffer[i] = raw_rgb_color;
     }
 }
+//============================================================================================================
+//============================================================================================================
+//============================================================================================================
+// Bezpieczny, potężny bufor statyczny 600x600 – zapobiega ucinaniu ogromnych glifów
+// #define MAX_GLYPH_SIZE (600 * 600)
+// static uint8_t glyph_scratch_bitmap[MAX_GLYPH_SIZE];
+// void draw_clock_perfect_monospace_90(uint16_t *framebuffer, int native_width, int native_height,
+//                                      const uint8_t *font_buffer, const char *text,
+//                                      int x_pos, int y_pos, float font_size_px, uint16_t text_color)
+// {
+//     stbtt_fontinfo font;
+//     if (!stbtt_InitFont(&font, font_buffer, 0))
+//     {
+//         return;
+//     }
 
+//     float scale = stbtt_ScaleForPixelHeight(&font, font_size_px);
+
+//     int ascent, descent, lineGap;
+//     stbtt_GetFontVMetrics(&font, &ascent, &descent, &lineGap);
+//     int baseline = (int)(ascent * scale);
+
+//     int zero_advance, zero_lsb;
+//     stbtt_GetCodepointHMetrics(&font, '0', &zero_advance, &zero_lsb);
+//     int box_width = (int)(zero_advance * scale);
+
+//     int zero_x1, zero_y1, zero_x2, zero_y2;
+//     stbtt_GetCodepointBitmapBox(&font, '0', scale, scale, &zero_x1, &zero_y1, &zero_x2, &zero_y2);
+//     int global_left_offset = (int)(zero_lsb * scale);
+
+//     int x = x_pos - global_left_offset;
+
+//     for (int i = 0; text[i] != '\0'; ++i)
+//     {
+//         int cp = text[i];
+
+//         int c_x1, c_y1, c_x2, c_y2;
+//         stbtt_GetCodepointBitmapBox(&font, cp, scale, scale, &c_x1, &c_y1, &c_x2, &c_y2);
+
+//         int y = y_pos + baseline + c_y1;
+//         int gw = c_x2 - c_x1;
+//         int gh = c_y2 - c_y1;
+
+//         int right_align_shift = 0;
+//         if (cp != ':')
+//         {
+//             int current_advance, current_lsb;
+//             stbtt_GetCodepointHMetrics(&font, cp, &current_advance, &current_lsb);
+//             int current_width = (int)(current_advance * scale);
+//             right_align_shift = box_width - current_width;
+//         }
+
+//         // Zabezpieczenie zaktualizowane pod rozmiar 600x600
+//         if (gw > 0 && gh > 0 && (gw * gh) <= MAX_GLYPH_SIZE)
+//         {
+
+//             // Generowanie bitmapy prosto do stałego bufora RAM
+//             stbtt_MakeCodepointBitmap(&font, glyph_scratch_bitmap, gw, gh, gw, scale, scale, cp);
+
+//             for (int bx = 0; bx < gw; ++bx)
+//             {
+//                 for (int by = 0; by < gh; ++by)
+//                 {
+//                     uint8_t alpha = glyph_scratch_bitmap[by * gw + bx];
+
+//                     if (alpha > 30)
+//                     {
+//                         int virtual_x = x + bx + c_x1 + right_align_shift;
+//                         int virtual_y = y + by;
+
+//                         int scr_x = native_width - 1 - virtual_y;
+//                         int scr_y = virtual_x;
+
+//                         if (scr_x >= 0 && scr_x < native_width && scr_y >= 0 && scr_y < native_height)
+//                         {
+//                             framebuffer[scr_y * native_width + scr_x] = text_color;
+//                         }
+//                     }
+//                 }
+//             }
+//         }
+
+//         if (cp == ':')
+//         {
+//             int colon_advance, colon_lsb;
+//             stbtt_GetCodepointHMetrics(&font, ':', &colon_advance, &colon_lsb);
+//             x += (int)(colon_advance * scale);
+//         }
+//         else
+//         {
+//             x += box_width;
+//         }
+//     }
+// }
+
+//============================================================================================================
+//============================================================================================================
+//============================================================================================================
+void draw_text_90(uint16_t *framebuffer, int native_width, int native_height,
+                  const uint8_t *font_buffer, const char *text,
+                  int x_pos, int y_pos, float font_size_px, uint16_t text_color)
+{
+    stbtt_fontinfo font;
+    if (!stbtt_InitFont(&font, font_buffer, 0))
+    {
+        printf("Błąd inicjalizacji czcionki!\n");
+        return;
+    }
+
+    float scale = stbtt_ScaleForPixelHeight(&font, font_size_px);
+
+    int ascent, descent, lineGap;
+    stbtt_GetFontVMetrics(&font, &ascent, &descent, &lineGap);
+
+    // Zapobiegamy ucinaniu góry znaku przy y_pos = 0 dla bardzo dużych rozmiarów
+    int baseline = (int)(ascent * scale);
+    int x = x_pos;
+
+    for (int i = 0; text[i] != '\0'; ++i)
+    {
+        int advance, lsb;
+        stbtt_GetCodepointHMetrics(&font, text[i], &advance, &lsb);
+
+        int c_x1, c_y1, c_x2, c_y2;
+        stbtt_GetCodepointBitmapBox(&font, text[i], scale, scale, &c_x1, &c_y1, &c_x2, &c_y2);
+
+        // Korekta pozycjonowania Y
+        int y = y_pos + baseline + c_y1;
+        int byte_width = c_x2 - c_x1;
+        int byte_height = c_y2 - c_y1;
+
+        if (byte_width > 0 && byte_height > 0)
+        {
+            uint8_t *bitmap = (uint8_t *)malloc(byte_width * byte_height);
+            stbtt_MakeCodepointBitmap(&font, bitmap, byte_width, byte_height, byte_width, scale, scale, text[i]);
+
+            for (int bx = 0; bx < byte_width; ++bx)
+            {
+                for (int by = 0; by < byte_height; ++by)
+                {
+                    uint8_t alpha = bitmap[by * byte_width + bx];
+
+                    if (alpha > 30)
+                    {
+                        int virtual_x = x + bx + c_x1;
+                        int virtual_y = y + by;
+
+                        int scr_x = native_width - 1 - virtual_y;
+                        int scr_y = virtual_x;
+
+                        if (scr_x >= 0 && scr_x < native_width && scr_y >= 0 && scr_y < native_height)
+                        {
+                            framebuffer[scr_y * native_width + scr_x] = text_color;
+                        }
+                    }
+                }
+            }
+            free(bitmap);
+        }
+        x += (int)(advance * scale);
+        if (text[i + 1] != '\0')
+        {
+            x += (int)(stbtt_GetCodepointKernAdvance(&font, text[i], text[i + 1]) * scale);
+        }
+    }
+}
+//============================================================================================================
+//============================================================================================================
+//============================================================================================================
+// Szybka procedura rysowania wypełnionego prostokąta w układzie poziomym (Obrót o 90 stopni)
+// Współrzędne podajesz w wirtualnej siatce poziomej 1280 (szerokość) x 800 (wysokość)
+void draw_rectangle_90(uint16_t *framebuffer, int native_width, int native_height,
+                       int x_pos, int y_pos, int width, int height, uint16_t color)
+{
+    // Iterujemy po wirtualnej szerokości i wysokości prostokąta
+    for (int v_x = x_pos; v_x < x_pos + width; v_x++)
+    {
+        for (int v_y = y_pos; v_y < y_pos + height; v_y++)
+        {
+
+            // Dokładnie ta sama transformacja obrotu, co dla czcionek i linii!
+            int scr_x = native_width - 1 - v_y;
+            int scr_y = v_x;
+
+            // Bezpiecznik przed wyjściem poza fizyczną pamięć matrycy (800x1280)
+            if (scr_x >= 0 && scr_x < native_width && scr_y >= 0 && scr_y < native_height)
+            {
+                framebuffer[scr_y * native_width + scr_x] = color;
+            }
+        }
+    }
+}
+
+//============================================================================================================
+//============================================================================================================
+//============================================================================================================
+// Szybka funkcja rysująca linię pionową względem wyświetlanego tekstu
+void draw_line_90(uint16_t *framebuffer, int native_width, int native_height,
+                  int virtual_x, int virtual_y_start, int virtual_y_end, uint16_t color)
+{
+    for (int v_y = virtual_y_start; v_y <= virtual_y_end; v_y++)
+    {
+        // Ta sama transformacja obrotu o 90 stopni, co dla czcionki!
+        int scr_x = native_width - 1 - v_y;
+        int scr_y = virtual_x;
+
+        // Bezpiecznik pamięci
+        if (scr_x >= 0 && scr_x < native_width && scr_y >= 0 && scr_y < native_height)
+        {
+            framebuffer[scr_y * native_width + scr_x] = color;
+        }
+    }
+}
+//============================================================================================================
+//============================================================================================================
+//============================================================================================================
+void draw_clock_perfect_monospace_90(uint16_t *framebuffer, int native_width, int native_height,
+                                     const uint8_t *font_buffer, const char *text,
+                                     int x_pos, int y_pos, float font_size_px, uint16_t text_color)
+{
+    stbtt_fontinfo font;
+    if (!stbtt_InitFont(&font, font_buffer, 0))
+    {
+        printf("Błąd inicjalizacji czcionki!\n");
+        return;
+    }
+
+    float scale = stbtt_ScaleForPixelHeight(&font, font_size_px);
+
+    int ascent, descent, lineGap;
+    stbtt_GetFontVMetrics(&font, &ascent, &descent, &lineGap);
+    int baseline = (int)(ascent * scale);
+
+    // KROK 1: Wyznaczamy idealną, stałą szerokość wirtualnego pudełka na bazie cyfry '0'
+    int zero_advance, zero_lsb;
+    stbtt_GetCodepointHMetrics(&font, '0', &zero_advance, &zero_lsb);
+    int box_width = (int)(zero_advance * scale); // Nasz stały "buks" na cyfrę
+
+    // KROK 2: Pobieramy fabryczny margines cyfry '0', aby pierwszy box przytulił się idealnie do X = 0
+    int zero_x1, zero_y1, zero_x2, zero_y2;
+    stbtt_GetCodepointBitmapBox(&font, '0', scale, scale, &zero_x1, &zero_y1, &zero_x2, &zero_y2);
+    int global_left_offset = (int)(zero_lsb * scale);
+
+    int x = x_pos - global_left_offset; // Korekta startu, żeby box zaczynał się od piksela 0
+
+    for (int i = 0; text[i] != '\0'; ++i)
+    {
+        int cp = text[i];
+
+        int c_x1, c_y1, c_x2, c_y2;
+        stbtt_GetCodepointBitmapBox(&font, cp, scale, scale, &c_x1, &c_y1, &c_x2, &c_y2);
+
+        int y = y_pos + baseline + c_y1;
+        int gw = c_x2 - c_x1; // Rzeczywista szerokość rysowanego znaku
+        int gh = c_y2 - c_y1; // Rzeczywista wysokość rysowanego znaku
+
+        // KROK 3: Logika wyrównania do prawej krawędzi WIRTUALNEGO PUDEŁKA (box_width)
+        int right_align_shift = 0;
+        if (cp != ':')
+        {
+            // Obliczamy ile wolnego miejsca zostaje w pudełku i przesuwamy cyfrę w prawo
+            int current_advance, current_lsb;
+            stbtt_GetCodepointHMetrics(&font, cp, &current_advance, &current_lsb);
+            int current_width = (int)(current_advance * scale);
+            right_align_shift = box_width - current_width;
+        }
+
+        if (gw > 0 && gh > 0)
+        {
+            uint8_t *bitmap = (uint8_t *)malloc(gw * gh);
+            stbtt_MakeCodepointBitmap(&font, bitmap, gw, gh, gw, scale, scale, cp);
+
+            for (int bx = 0; bx < gw; ++bx)
+            {
+                for (int by = 0; by < gh; ++by)
+                {
+                    uint8_t alpha = bitmap[by * gw + bx];
+
+                    if (alpha > 30)
+                    {
+                        // Pozycja uwzględnia pozycję boksu oraz wyrównanie znaku do jego prawej strony
+                        int virtual_x = x + bx + c_x1 + right_align_shift;
+                        int virtual_y = y + by;
+
+                        // Obrót o 90 stopni do poziomu
+                        int scr_x = native_width - 1 - virtual_y;
+                        int scr_y = virtual_x;
+
+                        if (scr_x >= 0 && scr_x < native_width && scr_y >= 0 && scr_y < native_height)
+                        {
+                            framebuffer[scr_y * native_width + scr_x] = text_color;
+                        }
+                    }
+                }
+            }
+            free(bitmap);
+        }
+
+        // KROK 4: Kursor przesuwa się zawsze o stałą szerokość wirtualnego pudełka!
+        if (cp == ':')
+        {
+            // Dwukropek dostaje mniejszy, sztywny krok, żeby nie robić gigantycznej dziury
+            int colon_advance, colon_lsb;
+            stbtt_GetCodepointHMetrics(&font, ':', &colon_advance, &colon_lsb);
+            x += (int)(colon_advance * scale);
+        }
+        else
+        {
+            x += box_width; // Cyfry idą idealnie jak w siatce matrycowej!
+        }
+    }
+}
+
+//============================================================================================================
+//============================================================================================================
+//============================================================================================================
 extern "C" void app_main(void)
 {
     printf("[LOG] INICJALIZACJA SYSTEMU BARE-METAL...\n");
@@ -45,8 +377,19 @@ extern "C" void app_main(void)
         printf("[CRITICAL ERROR] Brak pamieci PSRAM na Backbuffer!\n");
         return;
     }
-
     printf("[LOG] STABILNA PĘTLA GRAFICZNA URUCHOMIONA!\n");
+
+    // 2. Deklaracja obiektu (producent sam skonfiguruje I2C w środku)
+    static gsl3680_touch touch(TP_I2C_SDA, TP_I2C_SCL, TP_RST, TP_INT);
+
+    // 3. Odpalenie dotyku – teraz przejdzie bez błędu i wybudzi układ!
+    touch.begin();
+    printf("[LOG] Dotyk gsl3680 pomyślnie wystartował bez konfliktów magistrali!\n");
+
+    uint16_t touchX = 0;
+    uint16_t touchY = 0;
+
+    // 1. CZYSZCZENIE EKRANU W PSRAM -> CZERWONY
 
     while (1)
     {
@@ -56,7 +399,49 @@ extern "C" void app_main(void)
 
         // JEDEN POTĘŻNY, STABILNY TRANSFER SPRZĘTOWY PRZEZ DMA (800x1280)
         lcd.lcd_draw_bitmap(0, 0, LCD_H_RES, LCD_V_RES, (uint8_t *)backbuffer);
-        vTaskDelay(pdMS_TO_TICKS(1000)); // Czekamy całą sekundę - DMA bez problemu skończy transfer!
+
+        //============================================================================================================
+        //============================================================================================================
+        //============================================================================================================
+        uint64_t start_time = 0;
+        uint64_t end_time = 0;
+        while (1)
+        {
+            start_time = esp_timer_get_time(); // Pobieramy czas w mikrosekundach przed rysowaniem
+            safe_clear_screen(0x0000);         // Czyszczenie bufora w PSRAM na czarno
+            // uint64_t end_time = esp_timer_get_time(); // Pobieramy czas zaraz po zakończeniu rysowania czcionek
+
+            // start_time = esp_timer_get_time(); // Pobieramy czas w mikrosekundach przed rysowaniem
+            draw_clock_perfect_monospace_90(backbuffer, LCD_H_RES, LCD_V_RES, digital_7_ttf, "22", 0, 0, 370.0f, 0xFFFF);
+            draw_clock_perfect_monospace_90(backbuffer, LCD_H_RES, LCD_V_RES, digital_7_ttf, "04", 680, 0, 370.0f, 0xFFFF);
+
+            draw_rectangle_90(backbuffer, LCD_H_RES, LCD_V_RES, 605, 138, 50, 50, 0xFFFF);
+            draw_rectangle_90(backbuffer, LCD_H_RES, LCD_V_RES, 605, 324, 50, 50, 0xFFFF);
+            lcd.lcd_draw_bitmap(0, 0, LCD_H_RES, LCD_V_RES, (uint8_t *)backbuffer);
+            end_time = esp_timer_get_time(); // Pobieramy czas zaraz po zakończeniu rysowania czcionek
+            printf("[PROFILER] Rysowanie cyfr czcionki 370 zajelo: %llu us (mikrosekund)\n", (end_time - start_time));
+            vTaskDelay(pdMS_TO_TICKS(1000));
+        }
+        //============================================================================================================
+        //============================================================================================================
+        //============================================================================================================
+
+        // 3. Twoja pętla główna programu
+        while (1)
+        {
+            // Sprawdzamy czy ekran jest dotykany za pomocą metody producenta
+            // przekazując wskaźniki do naszych zmiennych X i Y
+            bool touched = touch.getTouch(&touchX, &touchY);
+
+            if (touched)
+            {
+                // Jeśli wykryto dotyk, wypisujemy współrzędne na konsolę (zakładka MONITOR)
+                printf("DOTYK! X = %d, Y = %d\n", touchX, touchY);
+            }
+
+            // Krótkie opóźnienie 20ms, aby nie przeciążać procesora i magistrali
+            vTaskDelay(pdMS_TO_TICKS(20));
+        }
 
         // 2. CZYSZCZENIE EKRANU W PSRAM -> NIEBIESKI
         printf("[LOG] RENDER -> NIEBIESKI\n");
