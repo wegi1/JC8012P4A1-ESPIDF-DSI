@@ -1,4 +1,4 @@
-idf_component_register(SRCS "main.cpp"
+idf_component_register(SRCS "rx8025t.c" "main.cpp"
                        INCLUDE_DIRS "." "fonts"
-                       REQUIRES lcd touch esp_timer touch)
+                       REQUIRES lcd esp_timer touch driver)
 

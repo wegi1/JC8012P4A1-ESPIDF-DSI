@@ -1,3 +1,5 @@
+// #define _GNU_SOURCE // << TO MAKRO MUSI BYĆ JAKO PIERWSZE NA SAMEJ GÓRZE PLIKU!
+
 #pragma GCC push_options
 #pragma GCC optimize("O3")
 
@@ -19,6 +21,10 @@
 #define STB_TRUETYPE_IMPLEMENTATION
 #include "stb_truetype.h"
 #include "esp_timer.h"
+#include "esp_log.h"
+#include <sys/time.h> // Zawiera settimeofday
+#include <time.h>     // Zawiera struktury czasu
+
 //============================================================================================================
 //============================================================================================================
 //============================================================================================================
@@ -27,7 +33,11 @@
 extern "C"
 {
 #include "gsl3680_touch.h"
+#include "rx8025t.h"
 }
+//============================================================================================================
+//============================================================================================================
+//============================================================================================================
 
 #include "driver/i2c.h" // Potrzebne do konfiguracji magistrali
 
@@ -50,97 +60,38 @@ void safe_clear_screen(uint16_t color)
 //============================================================================================================
 //============================================================================================================
 //============================================================================================================
-// Bezpieczny, potężny bufor statyczny 600x600 – zapobiega ucinaniu ogromnych glifów
-// #define MAX_GLYPH_SIZE (600 * 600)
-// static uint8_t glyph_scratch_bitmap[MAX_GLYPH_SIZE];
-// void draw_clock_perfect_monospace_90(uint16_t *framebuffer, int native_width, int native_height,
-//                                      const uint8_t *font_buffer, const char *text,
-//                                      int x_pos, int y_pos, float font_size_px, uint16_t text_color)
-// {
-//     stbtt_fontinfo font;
-//     if (!stbtt_InitFont(&font, font_buffer, 0))
-//     {
-//         return;
-//     }
+void sync_internal_rtc_with_rx8025t(void)
+{
+    rx8025t_time_t rtc_hardware_time;
 
-//     float scale = stbtt_ScaleForPixelHeight(&font, font_size_px);
+    // 1. Pobieramy aktualny czas z fizycznej kostki RX8025T
+    if (rx8025t_get_time(&rtc_hardware_time) == ESP_OK)
+    {
+        // 2. Przepisujemy na strukturę systemową 'struct tm'
+        struct tm sys_time;
+        sys_time.tm_sec = rtc_hardware_time.second;
+        sys_time.tm_min = rtc_hardware_time.minute;
+        sys_time.tm_hour = rtc_hardware_time.hour;
+        sys_time.tm_mday = rtc_hardware_time.day;
+        sys_time.tm_mon = rtc_hardware_time.month - 1;    // W systemie C miesiące są od 0 do 11
+        sys_time.tm_year = rtc_hardware_time.year - 1900; // System C liczy lata od roku 1900
+        sys_time.tm_wday = rtc_hardware_time.weekday;
+        sys_time.tm_isdst = -1; // Brak informacji o czasie letnim
 
-//     int ascent, descent, lineGap;
-//     stbtt_GetFontVMetrics(&font, &ascent, &descent, &lineGap);
-//     int baseline = (int)(ascent * scale);
+        // 3. Konwersja na znacznik czasu UNIX (liczba sekund od 1970 r.)
+        time_t t = mktime(&sys_time);
 
-//     int zero_advance, zero_lsb;
-//     stbtt_GetCodepointHMetrics(&font, '0', &zero_advance, &zero_lsb);
-//     int box_width = (int)(zero_advance * scale);
+        // 4. Ustawiamy wewnętrzny czas systemowy w ESP32-P4
+        struct timeval now = {.tv_sec = t, .tv_usec = 0};
+        settimeofday(&now, NULL);
 
-//     int zero_x1, zero_y1, zero_x2, zero_y2;
-//     stbtt_GetCodepointBitmapBox(&font, '0', scale, scale, &zero_x1, &zero_y1, &zero_x2, &zero_y2);
-//     int global_left_offset = (int)(zero_lsb * scale);
-
-//     int x = x_pos - global_left_offset;
-
-//     for (int i = 0; text[i] != '\0'; ++i)
-//     {
-//         int cp = text[i];
-
-//         int c_x1, c_y1, c_x2, c_y2;
-//         stbtt_GetCodepointBitmapBox(&font, cp, scale, scale, &c_x1, &c_y1, &c_x2, &c_y2);
-
-//         int y = y_pos + baseline + c_y1;
-//         int gw = c_x2 - c_x1;
-//         int gh = c_y2 - c_y1;
-
-//         int right_align_shift = 0;
-//         if (cp != ':')
-//         {
-//             int current_advance, current_lsb;
-//             stbtt_GetCodepointHMetrics(&font, cp, &current_advance, &current_lsb);
-//             int current_width = (int)(current_advance * scale);
-//             right_align_shift = box_width - current_width;
-//         }
-
-//         // Zabezpieczenie zaktualizowane pod rozmiar 600x600
-//         if (gw > 0 && gh > 0 && (gw * gh) <= MAX_GLYPH_SIZE)
-//         {
-
-//             // Generowanie bitmapy prosto do stałego bufora RAM
-//             stbtt_MakeCodepointBitmap(&font, glyph_scratch_bitmap, gw, gh, gw, scale, scale, cp);
-
-//             for (int bx = 0; bx < gw; ++bx)
-//             {
-//                 for (int by = 0; by < gh; ++by)
-//                 {
-//                     uint8_t alpha = glyph_scratch_bitmap[by * gw + bx];
-
-//                     if (alpha > 30)
-//                     {
-//                         int virtual_x = x + bx + c_x1 + right_align_shift;
-//                         int virtual_y = y + by;
-
-//                         int scr_x = native_width - 1 - virtual_y;
-//                         int scr_y = virtual_x;
-
-//                         if (scr_x >= 0 && scr_x < native_width && scr_y >= 0 && scr_y < native_height)
-//                         {
-//                             framebuffer[scr_y * native_width + scr_x] = text_color;
-//                         }
-//                     }
-//                 }
-//             }
-//         }
-
-//         if (cp == ':')
-//         {
-//             int colon_advance, colon_lsb;
-//             stbtt_GetCodepointHMetrics(&font, ':', &colon_advance, &colon_lsb);
-//             x += (int)(colon_advance * scale);
-//         }
-//         else
-//         {
-//             x += box_width;
-//         }
-//     }
-// }
+        ESP_LOGI("SYSTEM_RTC", "Synchronizacja udana! Wewnetrzny zegar ESP32-P4 zostal ustawiony.");
+    }
+    else
+    {
+        ESP_LOGE("SYSTEM_RTC", "BLAD SYNCHRONIZACJI! Zewnetrzny RX8025T nie odpowiedzial.");
+    }
+}
 
 //============================================================================================================
 //============================================================================================================
@@ -385,7 +336,69 @@ extern "C" void app_main(void)
     // 3. Odpalenie dotyku – teraz przejdzie bez błędu i wybudzi układ!
     touch.begin();
     printf("[LOG] Dotyk gsl3680 pomyślnie wystartował bez konfliktów magistrali!\n");
+    //============================================================================================================
+    rx8025t_init();
+    sync_internal_rtc_with_rx8025t(); // <<< WYWOŁUJEMY RAZ PO RESECIE
 
+    // =========================================================================
+    // TEST DETEKCJI I ODCZYTU ZEGARA RTC RX8025T
+    // =========================================================================
+
+    // Szybki ping adresu I2C (0x32) w celu weryfikacji obecności układu na magistrali
+    i2c_cmd_handle_t ping_cmd = i2c_cmd_link_create();
+    i2c_master_start(ping_cmd);
+    i2c_master_write_byte(ping_cmd, (0x32 << 1) | I2C_MASTER_WRITE, true);
+    i2c_master_stop(ping_cmd);
+
+    esp_err_t ping_err = i2c_master_cmd_begin(I2C_NUM_0, ping_cmd, pdMS_TO_TICKS(100));
+    i2c_cmd_link_delete(ping_cmd);
+
+    if (ping_err == ESP_OK)
+    {
+        ESP_LOGI("RTC_TEST", "SUKCES! Wykryto urzadzenie RX8025T pod adresem I2C 0x32.");
+
+        // Jeśli układ żyje, spróbujmy odczytać z niego czas na starcie
+        rx8025t_time_t test_time;
+        if (rx8025t_get_time(&test_time) == ESP_OK)
+        {
+            ESP_LOGI("RTC_TEST", "Pierwszy odczyt czasu udany: %02d:%02d:%02d, Data: %02d-%02d-%04d",
+                     test_time.hour, test_time.minute, test_time.second,
+                     test_time.day, test_time.month, test_time.year);
+        }
+        else
+        {
+            ESP_LOGE("RTC_TEST", "Blad podczas parsowania rejestrow czasu!");
+        }
+    }
+    else
+    {
+        ESP_LOGE("RTC_TEST", "BLAD! Urzadzenie pod adresem 0x32 nie odpowiada na szynie I2C. Sprawdz zasilanie/polaczenie.");
+    }
+    // ---------------------------------------------------------------------
+    // JEDNORAZOWE USTAWIANIE AKTUALNEGO CZASU
+    // ---------------------------------------------------------------------
+    // rx8025t_time_t czas_na_start;
+    // czas_na_start.hour = 10;   // Aktualna godzina (Format 24h)
+    // czas_na_start.minute = 41; // Aktualna minuta
+    // czas_na_start.second = 0;  // Sekundy na zero
+    // czas_na_start.day = 31;    // 31 dzień miesiąca
+    // czas_na_start.month = 10;  // Październik
+    // czas_na_start.year = 2026; // Rok 2026
+    // czas_na_start.weekday = 6; // 6 -> Sobota (licząc od 0=Niedziela lub 1=Poniedziałek wg Twojej konwencji)
+
+    // if (rx8025t_set_time(&czas_na_start) == ESP_OK)
+    // {
+    //     ESP_LOGI("RTC_TEST", "Prawidlowy czas (31.10.2026 10:44) zapisany do pamieci RTC!");
+    // }
+    // else
+    // {
+    //     ESP_LOGE("RTC_TEST", "Blad zapisu czasu!");
+    // }
+    // ---------------------------------------------------------------------
+
+    // =========================================================================
+
+    //============================================================================================================
     uint16_t touchX = 0;
     uint16_t touchY = 0;
 
@@ -405,23 +418,56 @@ extern "C" void app_main(void)
         //============================================================================================================
         uint64_t start_time = 0;
         uint64_t end_time = 0;
+
+        // Zmienne do obsługi wewnętrznego zegara systemowego ESP32-P4
+        time_t now_seconds;
+        struct tm time_info;
+
+        char str_godzina[4];
+        char str_minuta[4];
+        char str_sekunda[4];
+
         while (1)
         {
-            start_time = esp_timer_get_time(); // Pobieramy czas w mikrosekundach przed rysowaniem
-            safe_clear_screen(0x0000);         // Czyszczenie bufora w PSRAM na czarno
-            // uint64_t end_time = esp_timer_get_time(); // Pobieramy czas zaraz po zakończeniu rysowania czcionek
+            // ODCZYT CZASU Z WEWNĘTRZNEGO RTC PROCESORA ESP32-P4 (Trwa ułamki mikrosekundy!)
+            start_time = esp_timer_get_time(); // Pomiar wydajności renderu
+            time(&now_seconds);
+            localtime_r(&now_seconds, &time_info);
 
-            // start_time = esp_timer_get_time(); // Pobieramy czas w mikrosekundach przed rysowaniem
-            draw_clock_perfect_monospace_90(backbuffer, LCD_H_RES, LCD_V_RES, digital_7_ttf, "22", 0, 0, 370.0f, 0xFFFF);
-            draw_clock_perfect_monospace_90(backbuffer, LCD_H_RES, LCD_V_RES, digital_7_ttf, "04", 680, 0, 370.0f, 0xFFFF);
+            // Formatujemy bufory z wewnętrznej struktury systemowej 'time_info'
+            sprintf(str_godzina, "%02d", time_info.tm_hour);
+            sprintf(str_minuta, "%02d", time_info.tm_min);
+            sprintf(str_sekunda, "%02d", time_info.tm_sec);
 
+            safe_clear_screen(0x0000); // Czyszczenie na czarno
+
+            // 1. RYSOWANIE GODZINY (Rozmiar 370, wirtualny start X = 0, Y = 0)
+            draw_clock_perfect_monospace_90(backbuffer, LCD_H_RES, LCD_V_RES, digital_7_ttf, str_godzina, 0, 0, 370.0f, 0xFFFF);
+
+            // 2. RYSOWANIE MINUTY (Rozmiar 370, wirtualny dół X = 680, Y = 0)
+            draw_clock_perfect_monospace_90(backbuffer, LCD_H_RES, LCD_V_RES, digital_7_ttf, str_minuta, 680, 0, 370.0f, 0xFFFF);
+
+            // 3. PIONOWA ZIELONA LINIA BAZOWA NA WIRTUALNYM Y = 600
+            // draw_rectangle_90(backbuffer, LCD_H_RES, LCD_V_RES, 0, 600, 799, 2, 0x07E0);
+
+            // 4. RYSOWANIE SEKUNDNIKA (Wielkość 100, wirtualny Y = 610, wysokość X = 140)
+            draw_text_90(backbuffer, LCD_H_RES, LCD_V_RES, digital_7_ttf, str_sekunda, 140, 610, 100.0f, 0xFFFF);
+
+            // Migające kwadraciki dwukropka na X = 605
             draw_rectangle_90(backbuffer, LCD_H_RES, LCD_V_RES, 605, 138, 50, 50, 0xFFFF);
             draw_rectangle_90(backbuffer, LCD_H_RES, LCD_V_RES, 605, 324, 50, 50, 0xFFFF);
+
+            // Przesłanie bufora na ekran MIPI-DSI
             lcd.lcd_draw_bitmap(0, 0, LCD_H_RES, LCD_V_RES, (uint8_t *)backbuffer);
-            end_time = esp_timer_get_time(); // Pobieramy czas zaraz po zakończeniu rysowania czcionek
-            printf("[PROFILER] Rysowanie cyfr czcionki 370 zajelo: %llu us (mikrosekund)\n", (end_time - start_time));
+
+            end_time = esp_timer_get_time();
+
+            // Zobaczysz teraz w profilerze, ile czasu zaoszczędziliśmy na braku komunikacji po I2C!
+            printf("[PROFILER] Render calosci z wewnetrznego ZEGARA P4 zajal: %llu us\n", (end_time - start_time));
+
             vTaskDelay(pdMS_TO_TICKS(1000));
         }
+
         //============================================================================================================
         //============================================================================================================
         //============================================================================================================
