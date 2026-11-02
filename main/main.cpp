@@ -115,9 +115,10 @@ extern "C" esp_lcd_panel_handle_t get_my_dsi_handle(void);
 
 extern "C" void app_main(void)
 {
-
-    printf("[LOG] INICJALIZACJA SYSTEMU BARE-METAL...\n");
+    printf("[MEM_0] Przed LCD: %u KB wolnego\n", heap_caps_get_free_size(MALLOC_CAP_SPIRAM) / 1024);
     lcd.begin();
+    printf("[MEM_1] Po LCD (wewnętrzny FB sterownika ulokowany): %u KB wolnego\n", heap_caps_get_free_size(MALLOC_CAP_SPIRAM) / 1024);
+
     //****************************************************************************************** */
     // Inicjalizacja semafora FreeRTOS dla synchronizacji VSYNC
     vsync_sem = xSemaphoreCreateBinary();
@@ -134,6 +135,8 @@ extern "C" void app_main(void)
     // Alokacja dwóch buforów w PSRAM z wyrównaniem do linii Cache (64 bajty)
     size_t buffer_size = LCD_H_RES * LCD_V_RES * sizeof(uint16_t);
     fbs[0] = (uint16_t *)heap_caps_aligned_alloc(64, buffer_size, MALLOC_CAP_SPIRAM);
+
+    printf("[MEM_2] Po alokacji fbs[0] (Twoje 2MB pobrane): %u KB wolnego\n", heap_caps_get_free_size(MALLOC_CAP_SPIRAM) / 1024);
 
     if (fbs[0] == NULL)
     {

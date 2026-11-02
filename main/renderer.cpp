@@ -50,6 +50,8 @@ bool init_renderer_scratchpad(const uint8_t *clock_font_buffer, const uint8_t *s
            (void *)(stb_scratchpad_ptr + STB_SCRATCHPAD_SIZE - 1),
            STB_SCRATCHPAD_SIZE);
 
+    printf("[MEM_X] Po alokacji stb_scratchpad_ptr (1MB): %u KB wolnego\n", heap_caps_get_free_size(MALLOC_CAP_SPIRAM) / 1024);
+
     printf("[SUCCESS] Obie czcionki zostaly pomyslnie sparsowane na starcie.\n");
     return true;
 }
