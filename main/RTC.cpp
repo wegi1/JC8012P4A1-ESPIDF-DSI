@@ -22,7 +22,6 @@
 //=====================================================================================================
 // Deklaracje obiektow i buforow zdefiniowanych w main.cpp
 extern jd9365_lcd lcd;
-// ... Twoje dotychczasowe externy (lcd, fbs, vsync_sem) ...
 
 // ZAMYKAMY DEKLARACJĘ DOTYKU W BLOKU ZGODNOŚCI "C":
 extern gsl3680_touch touch;
@@ -54,6 +53,8 @@ void vTaskDisableColon(void *pvParameters)
 {
     uint64_t rtc_start = 0;
     uint64_t rtc_end = 0;
+    // 3. Definiujemy bufory w sposób absolutny i bezpieczny:
+    uint16_t *back_buffer = (uint16_t *)fbs[0]; // wolny bufor tła
     while (1)
     {
         // 1. Czekamy na sygnał wybudzenia z funkcji print_RTC()
@@ -62,26 +63,18 @@ void vTaskDisableColon(void *pvParameters)
         // 2. Odliczamy dokładnie 500 milisekund (dwukropek świeci)
         vTaskDelay(pdMS_TO_TICKS(500));
 
-        // 3. Definiujemy bufory w sposób absolutny i bezpieczny:
-        uint16_t *back_buffer = (uint16_t *)fbs[0]; // wolny bufor tła
-
-        // 6. Synchronizacja cache i oczekiwanie na VSYNC
-        rtc_start = esp_timer_get_time();
+        // rtc_start = esp_timer_get_time();
+        // 3. Od razu na nim GASIMY kwadraciki dwukropka
+        draw_rectangle_90(back_buffer, LCD_H_RES, LCD_V_RES, 605, 138, 50, 50, 0x0000);
+        draw_rectangle_90(back_buffer, LCD_H_RES, LCD_V_RES, 605, 324, 50, 50, 0x0000);
         esp_cache_msync((void *)back_buffer, BUFFER_SIZE, ESP_CACHE_MSYNC_FLAG_DIR_C2M);
-        rtc_end = esp_timer_get_time();
-        printf("[PROFILER] LOCALTIME zajął: %llu us\n", (rtc_end - rtc_start));
 
-        rtc_start = esp_timer_get_time();
         xSemaphoreTake(vsync_sem, portMAX_DELAY);
-        rtc_end = esp_timer_get_time();
-        printf("[PROFILER] xSemaphoreTake zajął: %llu us\n", (rtc_end - rtc_start));
 
         // 7. Wysłanie klatki bez dwukropka na ekran przez DMA
-        rtc_start = esp_timer_get_time();
         lcd.lcd_draw_bitmap(0, 0, LCD_H_RES, LCD_V_RES, (uint8_t *)back_buffer);
-        rtc_end = esp_timer_get_time();
-        printf("[PROFILER] lcd_draw_bitmap zajął: %llu us\n", (rtc_end - rtc_start));
 
+        // rtc_end = esp_timer_get_time();
         // printf("[PROFILER] RENDER COLON (vTaskDisableColon) zajął: %llu us\n", (rtc_end - rtc_start));
     }
 }
@@ -132,12 +125,12 @@ void init_RTC_subsystem(void)
 //=====================================================================================================
 // Zmienna do filtrowania zbocza sekundy (Edge Detection)
 static int old_seconds = 111;
-
-// Plik: main/rtc.cpp - Przygotowanie dwoch wersji buforow (Z i BEZ dwukropka)
 void print_RTC(void)
 {
     uint64_t rtc_start = 0;
     uint64_t rtc_end = 0;
+
+    // rtc_start = esp_timer_get_time();
     // 1. Pobieramy aktualny czas UNIX (liczba sekund od 1970 r.)
     time(&sekundy_epoch);
 
@@ -151,76 +144,40 @@ void print_RTC(void)
         return;
     }
     old_seconds = second_now;
-
-    // 1. Pobieramy wskaźniki na oba sprzętowe bufory z main.cpp
-    uint16_t *buffer_bez_dwukropka = (uint16_t *)fbs[0];
-    uint16_t *buffer_z_dwukropkiem = (uint16_t *)fbs[1];
-
-    rtc_start = esp_timer_get_time();
-    // 2. Pobieramy czas systemowy
-    time(&sekundy_epoch);
-    localtime_r(&sekundy_epoch, &dane_czasu);
-    rtc_end = esp_timer_get_time();
-    printf("[PROFILER] LOCALTIME zajął: %llu us\n", (rtc_end - rtc_start));
-
-    // 3. Formatowanie tekstu
-    rtc_start = esp_timer_get_time();
     snprintf(txt_godz, sizeof(txt_godz), "%02d", dane_czasu.tm_hour);
     snprintf(txt_min, sizeof(txt_min), "%02d", dane_czasu.tm_min);
     snprintf(txt_sek, sizeof(txt_sek), "%02d", dane_czasu.tm_sec);
-    rtc_end = esp_timer_get_time();
-    printf("[PROFILER] SNPRINTF zajął: %llu us\n", (rtc_end - rtc_start));
 
-    // 4. Czyszczenie bufora bazowego (bez dwukropka) na czarno
+    // 1. Pobieramy wskaźniki na oba sprzętowe bufory z main.cpp
 
-    rtc_start = esp_timer_get_time();
-    safe_clear_screen(buffer_bez_dwukropka, 0x0000);
-    rtc_end = esp_timer_get_time();
-    printf("[PROFILER] safe_clear_screen(); zajął: %llu us\n", (rtc_end - rtc_start));
+    uint16_t *main_buffer = (uint16_t *)fbs[0];
 
-    // 5. Rysowanie bazy zegara (czcionki wektorowe rysujemy TYLKO RAZ)
-    rtc_start = esp_timer_get_time();
-    draw_clock_perfect_monospace_90(buffer_bez_dwukropka, LCD_H_RES, LCD_V_RES, digital_7_ttf, txt_godz, 0, 0, 370.0f, 0xFFFF);
-    draw_clock_perfect_monospace_90(buffer_bez_dwukropka, LCD_H_RES, LCD_V_RES, digital_7_ttf, txt_min, 680, 0, 370.0f, 0xFFFF);
-    draw_clock_perfect_monospace_90(buffer_bez_dwukropka, LCD_H_RES, LCD_V_RES, digital_7_ttf, txt_sek, 140, 610, 100.0f, 0xFFFF);
-    rtc_end = esp_timer_get_time();
-    printf("[PROFILER] draw_clock_perfect_monospace_90(); zajął: %llu us\n", (rtc_end - rtc_start));
+    // 1. Czyszczenie jedynego bufora na czarno
+    safe_clear_screen(main_buffer, 0x0000);
 
-    // 6. BŁYSKAWICZNE KOPIOWANIE całego wyrenderowanego obrazu do drugiego bufora (Trwa ułamki milisekundy)
+    // 2. Rysowanie bazy zegara (czcionki wektorowe bezpośrednio na nim)
+    draw_clock_perfect_monospace_90(main_buffer, LCD_H_RES, LCD_V_RES, digital_7_ttf, txt_godz, 0, 0, 370.0f, 0xFFFF);
+    draw_clock_perfect_monospace_90(main_buffer, LCD_H_RES, LCD_V_RES, digital_7_ttf, txt_min, 680, 0, 370.0f, 0xFFFF);
+    draw_clock_perfect_monospace_90(main_buffer, LCD_H_RES, LCD_V_RES, digital_7_ttf, txt_sek, 140, 610, 100.0f, 0xFFFF);
 
-    rtc_start = esp_timer_get_time();
-    memcpy(buffer_z_dwukropkiem, buffer_bez_dwukropka, BUFFER_SIZE);
-    rtc_end = esp_timer_get_time();
-    printf("[PROFILER] memcpy(); zajął: %llu us\n", (rtc_end - rtc_start));
+    // 3. Od razu na nim zapalamy kwadraciki dwukropka
+    draw_rectangle_90(main_buffer, LCD_H_RES, LCD_V_RES, 605, 138, 50, 50, 0xFFFF);
+    draw_rectangle_90(main_buffer, LCD_H_RES, LCD_V_RES, 605, 324, 50, 50, 0xFFFF);
 
-    // 7. Na drugim buforze dorysowujemy tylko kwadraciki dwukropka
-    draw_rectangle_90(buffer_z_dwukropkiem, LCD_H_RES, LCD_V_RES, 605, 138, 50, 50, 0xFFFF);
-    draw_rectangle_90(buffer_z_dwukropkiem, LCD_H_RES, LCD_V_RES, 605, 324, 50, 50, 0xFFFF);
+    // 4. Jedno, czyste i pewne czyszczenie Cache dla tego bufora
+    esp_cache_msync((void *)main_buffer, BUFFER_SIZE, ESP_CACHE_MSYNC_FLAG_DIR_C2M);
 
-    // 8. Synchronizujemy Cache dla obu buforów w PSRAM, żeby kontroler DMA dostał świeże dane
-    esp_cache_msync((void *)buffer_bez_dwukropka, BUFFER_SIZE, ESP_CACHE_MSYNC_FLAG_DIR_C2M);
-    esp_cache_msync((void *)buffer_z_dwukropkiem, BUFFER_SIZE, ESP_CACHE_MSYNC_FLAG_DIR_C2M);
-
-    // =========================================================================
-    // TUTAJ DOPISUJEMY BRAKUJĄCE ELEMENTY SYNCHRONIZACJI POTOKU:
-    // =========================================================================
-
-    // 9. Czekamy na przerwanie sprzętowe VSYNC z wyświetlacza przed wysłaniem klatki
+    // 5. Czekamy na VSYNC i wypychamy DMA na ekran MIPI-DSI
     xSemaphoreTake(vsync_sem, portMAX_DELAY);
+    lcd.lcd_draw_bitmap(0, 0, LCD_H_RES, LCD_V_RES, (uint8_t *)main_buffer);
 
-    // 10. Wysyłamy przez DMA gotowy bufor Z DWUKROPKIEM na ekran MIPI-DSI
-    lcd.lcd_draw_bitmap(0, 0, LCD_H_RES, LCD_V_RES, (uint8_t *)buffer_z_dwukropkiem);
-
-    // 11. Zmieniamy indeks bufora (Double Buffering) - back_buffer_idx wskazuje teraz wolne tło
-    back_buffer_idx = 1 - back_buffer_idx;
-
-    // 12. WYBUDZAMY TASK GASZENIA DWUKROPKA - wysyłamy powiadomienie do vTaskDisableColon
+    // 6. Wybudzamy task gaszenia dwukropka (który po 500 ms tylko go zamaluje na czarno)
     if (hTaskDisableColon != NULL)
     {
         xTaskNotifyGive(hTaskDisableColon);
     }
-
-    // printf("[PROFILER] Pełny RENDER zegara (print_RTC) zajął: %llu us\n", (rtc_end - rtc_start));
+    // rtc_end = esp_timer_get_time();
+    // printf("[PROFILER] RENDER RTC (print_RTC) zajął: %llu us\n", (rtc_end - rtc_start));
 }
 
 //=====================================================================================================

@@ -51,7 +51,7 @@ jd9365_lcd lcd(LCD_RST);
 gsl3680_touch touch(TP_I2C_SDA, TP_I2C_SCL, TP_RST, TP_INT);
 
 // DWA SPRZĘTOWE BUFORY DLA BEZKOPIOŁOWEGO PAGE FLIPPINGU
-uint16_t *fbs[2] = {NULL, NULL};
+uint16_t *fbs[1] = {NULL};
 volatile int back_buffer_idx = 1;
 SemaphoreHandle_t vsync_sem = NULL;
 //============================================================================================================
@@ -134,9 +134,8 @@ extern "C" void app_main(void)
     // Alokacja dwóch buforów w PSRAM z wyrównaniem do linii Cache (64 bajty)
     size_t buffer_size = LCD_H_RES * LCD_V_RES * sizeof(uint16_t);
     fbs[0] = (uint16_t *)heap_caps_aligned_alloc(64, buffer_size, MALLOC_CAP_SPIRAM);
-    fbs[1] = (uint16_t *)heap_caps_aligned_alloc(64, buffer_size, MALLOC_CAP_SPIRAM);
 
-    if (fbs[0] == NULL || fbs[1] == NULL)
+    if (fbs[0] == NULL)
     {
         printf("[CRITICAL ERROR] Brak pamieci PSRAM na Double Buffering!\n");
         return;
@@ -145,11 +144,6 @@ extern "C" void app_main(void)
     printf("[MEMORY] FB0 zakres: %p -> %p (Rozmiar: %d bajtow)\n",
            (void *)fbs[0],
            (void *)((uint8_t *)fbs[0] + buffer_size - 1),
-           buffer_size);
-
-    printf("[MEMORY] FB1 zakres: %p -> %p (Rozmiar: %d bajtow)\n",
-           (void *)fbs[1],
-           (void *)((uint8_t *)fbs[1] + buffer_size - 1),
            buffer_size);
 
     // Inicjalizacja bufora 1 MB oraz jednorazowe parsowanie OBU czcionek
@@ -161,11 +155,9 @@ extern "C" void app_main(void)
 
     // JAWNE CZYSZCZENIE BUFORÓW NA CZARNO ZARAZ PO ALOKACJI (BEZPIECZNY START)
     safe_clear_screen(fbs[0], 0x0000);
-    safe_clear_screen(fbs[1], 0x0000);
 
     // Koniecznie synchronizujemy cache dla obu, żeby PSRAM przyjął czarne piksele
     esp_cache_msync((void *)fbs[0], buffer_size, ESP_CACHE_MSYNC_FLAG_DIR_C2M);
-    esp_cache_msync((void *)fbs[1], buffer_size, ESP_CACHE_MSYNC_FLAG_DIR_C2M);
 
     /***************************************************************************************************** */
     // ZAALOKUJ BUFOR W PSRAM TYLKO RAZ NA STARTE SYSTEMU (OK. 2 MB)
