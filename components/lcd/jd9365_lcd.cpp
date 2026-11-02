@@ -191,3 +191,11 @@ uint16_t jd9365_lcd::height()
 {
     return LCD_V_RES;
 }
+
+// Globalny wskaźnik ratunkowy, który złapie właściwy adres w locie
+esp_lcd_panel_handle_t global_mipi_dpi_panel_przechwyt = NULL;
+
+extern "C" esp_lcd_panel_handle_t get_my_dsi_handle(void)
+{
+    return panel_handle;
+}
