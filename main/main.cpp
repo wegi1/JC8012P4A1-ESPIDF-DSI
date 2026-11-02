@@ -28,7 +28,7 @@
 #include "freertos/semphr.h"
 #include "esp_cache.h"
 #include "esp_lcd_mipi_dsi.h"
-
+#include "RTC.hpp"
 //============================================================================================================
 //============================================================================================================
 //============================================================================================================
@@ -46,7 +46,7 @@ extern "C"
 // DWA SPRZĘTOWE BUFORY DLA BEZKOPIOŁOWEGO PAGE FLIPPINGU
 uint16_t *fbs[2] = {NULL, NULL};
 volatile int back_buffer_idx = 1;
-static SemaphoreHandle_t vsync_sem = NULL;
+SemaphoreHandle_t vsync_sem = NULL;
 
 // Callback wywoływany automatycznie z przerwania sprzętowego VSYNC
 static bool IRAM_ATTR on_frame_complete_cb(esp_lcd_panel_handle_t panel, esp_lcd_dpi_panel_event_data_t *edata, void *user_ctx)
@@ -176,7 +176,7 @@ extern "C" void app_main(void)
     printf("[LOG] STABILNA PĘTLA GRAFICZNA URUCHOMIONA!\n");
 
     // 2. Deklaracja obiektu (producent sam skonfiguruje I2C w środku)
-    static gsl3680_touch touch(TP_I2C_SDA, TP_I2C_SCL, TP_RST, TP_INT);
+    gsl3680_touch touch(TP_I2C_SDA, TP_I2C_SCL, TP_RST, TP_INT);
 
     // 3. Odpalenie dotyku – teraz przejdzie bez błędu i wybudzi układ!
     touch.begin();
@@ -184,7 +184,7 @@ extern "C" void app_main(void)
     //============================================================================================================
     rx8025t_init();
     sync_internal_rtc_with_rx8025t(); // <<< WYWOŁUJEMY RAZ PO RESECIE
-
+    init_RTC_subsystem();
     // =========================================================================
     // TEST DETEKCJI I ODCZYTU ZEGARA RTC RX8025T
     // =========================================================================
@@ -241,56 +241,14 @@ extern "C" void app_main(void)
     // }
     // ---------------------------------------------------------------------
 
-    // =========================================================================
-
-    //============================================================================================================
-    uint16_t touchX = 0;
-    uint16_t touchY = 0;
-
-    // 1. CZYSZCZENIE EKRANU W PSRAM -> CZERWONY
-
     //============================================================================================================
     //============================================================================================================
     //============================================================================================================
-    uint64_t start_time = 0;
-    uint64_t end_time = 0;
-    time_t now_seconds;
-    struct tm time_info;
-    char str_godzina[4];
-    char str_minuta[4];
-    char str_sekunda[4];
 
     // Pętla główna Double Bufferingu
     while (1)
     {
-        draw_ptr = fbs[back_buffer_idx];
-        time(&now_seconds);
-        localtime_r(&now_seconds, &time_info);
-
-        // Bezpieczne formatowanie z kontrolą rozmiaru bufora (snprintf)
-        snprintf(str_godzina, sizeof(str_godzina), "%02d", time_info.tm_hour);
-        snprintf(str_minuta, sizeof(str_minuta), "%02d", time_info.tm_min);
-        snprintf(str_sekunda, sizeof(str_sekunda), "%02d", time_info.tm_sec);
-
-        // 2. Czyszczenie bufora roboczego na czarno
-        safe_clear_screen(draw_ptr, 0x0000);
-
-        // 3. Rysowanie cyfr zegara i kwadracików dwukropka bezpośrednio na draw_ptr
-        draw_clock_perfect_monospace_90(draw_ptr, LCD_H_RES, LCD_V_RES, digital_7_ttf, str_godzina, 0, 0, 370.0f, 0xFFFF);
-        draw_clock_perfect_monospace_90(draw_ptr, LCD_H_RES, LCD_V_RES, digital_7_ttf, str_minuta, 680, 0, 370.0f, 0xFFFF);
-        draw_clock_perfect_monospace_90(draw_ptr, LCD_H_RES, LCD_V_RES, digital_7_ttf, str_sekunda, 140, 610, 100.0f, 0xFFFF);
-        // draw_text_90(draw_ptr, LCD_H_RES, LCD_V_RES, str_sekunda, 140, 610, 100.0f, 0xFFFF);
-
-        draw_rectangle_90(draw_ptr, LCD_H_RES, LCD_V_RES, 605, 138, 50, 50, 0xFFFF);
-        draw_rectangle_90(draw_ptr, LCD_H_RES, LCD_V_RES, 605, 324, 50, 50, 0xFFFF);
-
-        // Odświeżanie i rysowanie elementów na draw_ptr...
-        // Synchronizacja cache, semafor VSYNC oraz wywołanie lcd.lcd_draw_bitmap
-        esp_cache_msync((void *)draw_ptr, buffer_size, ESP_CACHE_MSYNC_FLAG_DIR_C2M);
-        xSemaphoreTake(vsync_sem, portMAX_DELAY);
-        lcd.lcd_draw_bitmap(0, 0, LCD_H_RES, LCD_V_RES, (uint8_t *)draw_ptr);
-
-        back_buffer_idx = 1 - back_buffer_idx;
-        vTaskDelay(pdMS_TO_TICKS(250));
+        print_RTC();
+        vTaskDelay(pdMS_TO_TICKS(100));
     }
 }

@@ -1,5 +1,7 @@
 #pragma once
 
+#include <stdint.h>
+
 #define LCD_H_RES 800
 #define LCD_V_RES 1280
 
