@@ -52,6 +52,7 @@ gsl3680_touch touch(TP_I2C_SDA, TP_I2C_SCL, TP_RST, TP_INT);
 
 // DWA SPRZĘTOWE BUFORY DLA BEZKOPIOŁOWEGO PAGE FLIPPINGU
 uint16_t *fbs[1] = {NULL};
+
 volatile int back_buffer_idx = 1;
 SemaphoreHandle_t vsync_sem = NULL;
 //============================================================================================================
@@ -107,6 +108,9 @@ void sync_internal_rtc_with_rx8025t(void)
         ESP_LOGE("SYSTEM_RTC", "BLAD SYNCHRONIZACJI! Zewnetrzny RX8025T nie odpowiedzial.");
     }
 }
+//============================================================================================================
+//============================================================================================================
+//============================================================================================================
 
 //============================================================================================================
 //============================================================================================================
@@ -124,12 +128,15 @@ extern "C" void app_main(void)
     vsync_sem = xSemaphoreCreateBinary();
     xSemaphoreGive(vsync_sem);
 
+    //======================================================================================================================================
     // Pobieramy sprzętowy uchwyt panelu bezpośrednio z pliku .cpp przez funkcję globalną
     esp_lcd_panel_handle_t dpi_handle = get_my_dsi_handle();
 
     // Rejestracja callbacku przerwaniowego VSYNC (on_color_trans_done dla ESP-IDF 5.5.3)
-    esp_lcd_dpi_panel_event_callbacks_t cbs = {
-        .on_color_trans_done = on_frame_complete_cb};
+    // NOWA, IDEALNIE CZYSTA WERSJA (kompilator to pokocha):
+    esp_lcd_dpi_panel_event_callbacks_t cbs = {};   // Wyzerowanie wszystkich pól struktury
+    cbs.on_color_trans_done = on_frame_complete_cb; // Przypisanie naszego przerwaniowego callbacku
+
     esp_lcd_dpi_panel_register_event_callbacks(dpi_handle, &cbs, NULL);
 
     // Alokacja dwóch buforów w PSRAM z wyrównaniem do linii Cache (64 bajty)
