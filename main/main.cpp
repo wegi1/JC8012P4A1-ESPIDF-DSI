@@ -1,9 +1,8 @@
-// #define _GNU_SOURCE // << TO MAKRO MUSI BYĆ JAKO PIERWSZE NA SAMEJ GÓRZE PLIKU!
-
 #pragma GCC push_options
 #pragma GCC optimize("O3")
 
 #include "renderer.hpp"
+#include "WiFi_NTP.hpp"
 
 #include <stdio.h>
 #include <string.h>
@@ -182,6 +181,9 @@ extern "C" void app_main(void)
     //============================================================================================================
     rx8025t_init();
     sync_internal_rtc_with_rx8025t(); // <<< WYWOŁUJEMY RAZ PO RESECIE
+    // Uruchomienie Wi-Fi i synchronizacji NTP w asynchronicznym tle FreeRTOS
+    init_wifi_and_ntp("Bentonit", "Cwibelek11");
+
     init_RTC_subsystem();
     // =========================================================================
     // TEST DETEKCJI I ODCZYTU ZEGARA RTC RX8025T

@@ -130,7 +130,6 @@ void draw_clock_perfect_monospace_90(uint16_t *framebuffer, int native_width, in
 
     int ascent, descent, lineGap;
     stbtt_GetFontVMetrics(&global_clock_font, &ascent, &descent, &lineGap);
-    int baseline = (int)(ascent * scale);
 
     // KROK 1: Wyznaczamy idealną, stałą szerokość wirtualnego pudełka na bazie cyfry '0'
     int zero_advance, zero_lsb;
@@ -151,7 +150,7 @@ void draw_clock_perfect_monospace_90(uint16_t *framebuffer, int native_width, in
         int c_x1, c_y1, c_x2, c_y2;
         stbtt_GetCodepointBitmapBox(&global_clock_font, cp, scale, scale, &c_x1, &c_y1, &c_x2, &c_y2);
 
-        int y = y_pos + baseline + c_y1;
+        int y = y_pos + (c_y1 - zero_y1);
         int gw = c_x2 - c_x1; // Rzeczywista szerokość rysowanego znaku
         int gh = c_y2 - c_y1; // Rzeczywista wysokość rysowanego znaku
 
