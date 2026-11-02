@@ -29,6 +29,8 @@
 #include "esp_cache.h"
 #include "esp_lcd_mipi_dsi.h"
 #include "RTC.hpp"
+#include "driver/i2c.h" // Potrzebne do konfiguracji magistrali
+
 //============================================================================================================
 //============================================================================================================
 //============================================================================================================
@@ -42,12 +44,19 @@ extern "C"
 //============================================================================================================
 //============================================================================================================
 //============================================================================================================
+// ... pod sekcją extern "C" ze sterownikami ...
+jd9365_lcd lcd(LCD_RST);
+
+// TUTAJ PRZENOSIMY OBIEKT JAKO GLOBALNY, ŻEBY RTC.CPP GO WIDZIAŁ:
+gsl3680_touch touch(TP_I2C_SDA, TP_I2C_SCL, TP_RST, TP_INT);
 
 // DWA SPRZĘTOWE BUFORY DLA BEZKOPIOŁOWEGO PAGE FLIPPINGU
 uint16_t *fbs[2] = {NULL, NULL};
 volatile int back_buffer_idx = 1;
 SemaphoreHandle_t vsync_sem = NULL;
-
+//============================================================================================================
+//============================================================================================================
+//============================================================================================================
 // Callback wywoływany automatycznie z przerwania sprzętowego VSYNC
 static bool IRAM_ATTR on_frame_complete_cb(esp_lcd_panel_handle_t panel, esp_lcd_dpi_panel_event_data_t *edata, void *user_ctx)
 {
@@ -59,16 +68,6 @@ static bool IRAM_ATTR on_frame_complete_cb(esp_lcd_panel_handle_t panel, esp_lcd
     return high_task_awoken;
 }
 
-//============================================================================================================
-//============================================================================================================
-//============================================================================================================
-
-#include "driver/i2c.h" // Potrzebne do konfiguracji magistrali
-
-jd9365_lcd lcd(LCD_RST);
-
-// JEDEN STAŁY BUFOR W PSRAM DLA CAŁEGO INTERFEJSU
-uint16_t *draw_ptr = NULL;
 //============================================================================================================
 //============================================================================================================
 //============================================================================================================
@@ -174,9 +173,6 @@ extern "C" void app_main(void)
     // draw_ptr  = (uint16_t *)heap_caps_malloc(buffer_size, MALLOC_CAP_SPIRAM);
 
     printf("[LOG] STABILNA PĘTLA GRAFICZNA URUCHOMIONA!\n");
-
-    // 2. Deklaracja obiektu (producent sam skonfiguruje I2C w środku)
-    gsl3680_touch touch(TP_I2C_SDA, TP_I2C_SCL, TP_RST, TP_INT);
 
     // 3. Odpalenie dotyku – teraz przejdzie bez błędu i wybudzi układ!
     touch.begin();
