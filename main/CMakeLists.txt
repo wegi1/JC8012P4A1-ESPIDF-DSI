@@ -4,7 +4,6 @@ idf_component_register(
         "RTC.cpp"
         "renderer.cpp"
         "rx8025t.c"
-        "WiFi_NTP.cpp"
     INCLUDE_DIRS 
         "."
         "fonts"
