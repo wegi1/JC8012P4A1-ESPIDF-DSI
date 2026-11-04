@@ -216,27 +216,6 @@ extern "C" void app_main(void)
     {
         ESP_LOGE("RTC_TEST", "BLAD! Urzadzenie pod adresem 0x32 nie odpowiada na szynie I2C. Sprawdz zasilanie/polaczenie.");
     }
-    // ---------------------------------------------------------------------
-    // JEDNORAZOWE USTAWIANIE AKTUALNEGO CZASU
-    // ---------------------------------------------------------------------
-    // rx8025t_time_t czas_na_start;
-    // czas_na_start.hour = 10;   // Aktualna godzina (Format 24h)
-    // czas_na_start.minute = 41; // Aktualna minuta
-    // czas_na_start.second = 0;  // Sekundy na zero
-    // czas_na_start.day = 31;    // 31 dzień miesiąca
-    // czas_na_start.month = 10;  // Październik
-    // czas_na_start.year = 2026; // Rok 2026
-    // czas_na_start.weekday = 6; // 6 -> Sobota (licząc od 0=Niedziela lub 1=Poniedziałek wg Twojej konwencji)
-
-    // if (rx8025t_set_time(&czas_na_start) == ESP_OK)
-    // {
-    //     ESP_LOGI("RTC_TEST", "Prawidlowy czas (31.10.2026 10:44) zapisany do pamieci RTC!");
-    // }
-    // else
-    // {
-    //     ESP_LOGE("RTC_TEST", "Blad zapisu czasu!");
-    // }
-    // ---------------------------------------------------------------------
 
     //============================================================================================================
     //============================================================================================================
