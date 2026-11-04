@@ -17,3 +17,8 @@ void draw_test_cross(void);
 void show_debug_touch(uint16_t touchX, uint16_t touchY);
 void vTaskMenuEngine(void *pvParameters);
 void draw_common_menu_base(void);
+void set_hours_menu(void);
+void set_day_menu(void);
+void set_month_menu(void);
+void set_year_menu(void);
+void reset_seconds_to_zero(void);
