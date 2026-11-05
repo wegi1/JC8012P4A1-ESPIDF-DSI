@@ -30,3 +30,4 @@ const char *getDayofweek(uint8_t number);
 void init_NVS_system(void);
 void save_brightness_to_NVS(uint8_t brightness_val);
 uint8_t load_brightness_from_NVS(void);
+uint8_t get_max_days_in_month(int year, uint8_t month);

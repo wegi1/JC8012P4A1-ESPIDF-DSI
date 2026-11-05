@@ -190,7 +190,42 @@ void vTaskTouch(void *pvParameters)
                 // Anty-rebound (Debouncing) dla przycisku resetu
                 vTaskDelay(pdMS_TO_TICKS(250));
             }
-
+            // SEKCJA ROKU
+            if (touchX >= 1 && touchX <= 120 && touchY >= 1 && touchY <= 300)
+            {
+                printf("[TOUCH] -> Wykryto kliknięcie w USTAWIENIE ROKU!\n");
+                if (hTaskMenuEngine != NULL)
+                {
+                    is_editing_time = true;
+                    xTaskNotify(hTaskMenuEngine, 6, eSetValueWithOverwrite); // Wybudzamy silnik wartością 3
+                    vTaskSuspend(NULL);                                      // Samozawieszenie wątku dotyku
+                }
+                old_seconds = 111;
+            }
+            // SEKCJA MIESIĘCY
+            if (touchX >= 1 && touchX <= 120 && touchY >= 400 && touchY <= 560)
+            {
+                printf("[TOUCH] -> Wykryto kliknięcie w USTAWIENIE ROKU!\n");
+                if (hTaskMenuEngine != NULL)
+                {
+                    is_editing_time = true;
+                    xTaskNotify(hTaskMenuEngine, 5, eSetValueWithOverwrite); // Wybudzamy silnik wartością 3
+                    vTaskSuspend(NULL);                                      // Samozawieszenie wątku dotyku
+                }
+                old_seconds = 111;
+            }
+            // SEKCJA DNI
+            if (touchX >= 1 && touchX <= 120 && touchY >= 570 && touchY <= 870)
+            {
+                printf("[TOUCH] -> Wykryto kliknięcie w USTAWIENIE ROKU!\n");
+                if (hTaskMenuEngine != NULL)
+                {
+                    is_editing_time = true;
+                    xTaskNotify(hTaskMenuEngine, 4, eSetValueWithOverwrite); // Wybudzamy silnik wartością 3
+                    vTaskSuspend(NULL);                                      // Samozawieszenie wątku dotyku
+                }
+                old_seconds = 111;
+            }
             // Sprzętowy anty-rebound (Debouncing)
             vTaskDelay(pdMS_TO_TICKS(250));
         }
@@ -546,7 +581,19 @@ void vTaskMenuEngine(void *pvParameters)
         }
         else if (menu_choice == 3)
         {
-            set_light_menu(); // Wywołanie naszego nowego menu jasności
+            set_light_menu();
+        }
+        else if (menu_choice == 4) // NOWOŚĆ: POWIADOMIENIE NR 4
+        {
+            set_day_menu();
+        }
+        else if (menu_choice == 5) // NOWOŚĆ: POWIADOMIENIE NR 5
+        {
+            set_month_menu();
+        }
+        else if (menu_choice == 6) // NOWOŚĆ: POWIADOMIENIE NR 6
+        {
+            set_year_menu();
         }
 
         // --- KLUCZOWY FIX PO WCIŚNIĘCIU DONE ---
@@ -783,28 +830,294 @@ void reset_seconds_to_zero(void)
 //=====================================================================================================
 void set_day_menu(void)
 {
-    // Baza kalendarza:
-    // 1. Pobierz czas z RX8025T (setup_time.day)
-    // 2. Pętla while(is_editing_time) z hold_counter
-    // 3. Zakres: current_day = (current_day == 1) ? 31 : current_day - 1;
-    // 4. DONE: final_time.day = current_day -> Zapis RTC -> break;
+    uint16_t touchX = 0, touchY = 0;
+    int hold_counter = 0;
+    is_editing_time = true;
+    wait_for_release();
+
+    rx8025t_time_t setup_time;
+    if (rx8025t_get_time(&setup_time) != ESP_OK)
+    {
+        is_editing_time = false;
+        return;
+    }
+
+    int full_year = setup_time.year;
+    if (full_year < 2000)
+        full_year += 2000;
+
+    // DYNAMICZNIE USTALAMY MAKSYMALNY DZIEŃ DLA BIEŻĄCEGO MIESIĄCA I ROKU!
+    uint8_t max_days = get_max_days_in_month(full_year, setup_time.month);
+    int current_edit_day = setup_time.day;
+
+    // POPRAWIONO: Dodano jawny indeks [0] do wskaźnika klatki!
+    uint16_t *menu_buffer = (uint16_t *)fbs[0];
+    bool content_changed = true;
+
+    while (is_editing_time)
+    {
+        touchX = 0;
+        touchY = 0;
+        if (!touch.getTouch(&touchX, &touchY))
+        {
+            touchX = 0;
+            touchY = 0;
+        }
+
+        if (content_changed)
+        {
+            draw_common_menu_base();
+            draw_text_90(menu_buffer, LCD_H_RES, LCD_V_RES, " SET DAY", 280, 20, 150.0f, 0xFFFF);
+            char txt_current_day[16];
+            snprintf(txt_current_day, sizeof(txt_current_day), "%02d", current_edit_day);
+
+            draw_clock_perfect_monospace_90(menu_buffer, LCD_H_RES, LCD_V_RES, digital_7_ttf, txt_current_day, 470, 250, 220.0f, 0xFFFF);
+            show_debug_touch(touchX, touchY);
+            esp_cache_msync((void *)menu_buffer, BUFFER_SIZE, ESP_CACHE_MSYNC_FLAG_DIR_C2M);
+            xSemaphoreTake(vsync_sem, portMAX_DELAY);
+            lcd.lcd_draw_bitmap(0, 0, LCD_H_RES, LCD_V_RES, (uint8_t *)menu_buffer);
+            content_changed = false;
+        }
+        if (touchX > 0 && touchY > 0)
+        {
+            if (touchX >= 200 && touchX <= 600 && touchY >= 50 && touchY <= 350 &&
+                (hold_counter == 1 || (hold_counter > 500 && hold_counter % 15 == 0)))
+            {
+                current_edit_day = (current_edit_day == 1) ? max_days : current_edit_day - 1;
+                content_changed = true;
+            }
+            else if (touchX >= 200 && touchX <= 600 && touchY >= 950 && touchY <= 1250 &&
+                     (hold_counter == 1 || (hold_counter > 500 && hold_counter % 15 == 0)))
+            {
+                current_edit_day = (current_edit_day == max_days) ? 1 : current_edit_day + 1;
+                content_changed = true;
+            }
+            else if (touchX >= 50 && touchX <= 250 && touchY >= 450 && touchY <= 850)
+            {
+                setup_time.day = current_edit_day;
+
+                if (rx8025t_set_time(&setup_time) == ESP_OK)
+                {
+                    sync_internal_rtc_with_rx8025t();
+                }
+                break;
+            }
+            hold_counter++;
+        }
+        else
+        {
+            hold_counter = 0;
+        }
+        if (touchX == 0 && touchY == 0)
+        {
+            vTaskDelay(pdMS_TO_TICKS(10));
+        }
+    }
+    printf("[MENU] Done pressed. Czekam na puszczenie ekranu...\n");
+    wait_for_release();
 }
 //=====================================================================================================
 //=====================================================================================================
 //=====================================================================================================
 void set_year_menu(void)
 {
-    // Zakres: 2026 - 2099
-    // DONE: final_time.year = current_year -> Zapis RTC -> break;
+    uint16_t touchX = 0, touchY = 0;
+    int hold_counter = 0;
+    is_editing_time = true;
+
+    rx8025t_time_t setup_time;
+    if (rx8025t_get_time(&setup_time) != ESP_OK)
+    {
+        is_editing_time = false;
+        return;
+    }
+    // PRZELICZAMY DWUCYFROWY ROK Z RTC NA PEŁNY ROK (NP. 26 -> 2026)
+    // ODCINAMY baze 2000, poniewaz setup_time.year w ESP-IDF ma juz pelna wartosc kalendarzowa!
+    int current_edit_year = setup_time.year;
+    if (current_edit_year < 2000)
+    {
+        current_edit_year += 2000; // Zabezpieczenie na wypadek surowego rejestru z chipu
+    }
+
+    uint16_t *menu_buffer = (uint16_t *)fbs[0];
+    safe_clear_screen(menu_buffer, 0x0000);
+
+    esp_cache_msync((void *)menu_buffer, BUFFER_SIZE, ESP_CACHE_MSYNC_FLAG_DIR_C2M);
+    bool content_changed = true;
+
+    while (is_editing_time)
+    {
+        touchX = 0;
+        touchY = 0;
+        if (!touch.getTouch(&touchX, &touchY))
+        {
+            touchX = 0;
+            touchY = 0;
+        }
+        //************************************ */
+        if (content_changed)
+        {
+            draw_common_menu_base();
+            draw_text_90(menu_buffer, LCD_H_RES, LCD_V_RES, " SET YEAR", 280, 20, 150.0f, 0xFFFF);
+
+            // POPRAWIONY BUFOR TEKSTOWY JAKO TABLICA (TERAZ WYŚWIETLI IDEALNIE NP. "2026")
+            char txt_current_year[16];
+            snprintf(txt_current_year, sizeof(txt_current_year), "%04d", current_edit_year);
+
+            // RYSOWANIE ROKU CZCIONKĄ ZMNIEJSZONĄ DO 180.0f DLA LEPSZEGO DOPASOWANIA
+            draw_clock_perfect_monospace_90(menu_buffer, LCD_H_RES, LCD_V_RES, digital_7_ttf, txt_current_year, 350, 250, 180.0f, 0xFFFF);
+
+            show_debug_touch(touchX, touchY);
+
+            esp_cache_msync((void *)menu_buffer, BUFFER_SIZE, ESP_CACHE_MSYNC_FLAG_DIR_C2M);
+            xSemaphoreTake(vsync_sem, portMAX_DELAY);
+            lcd.lcd_draw_bitmap(0, 0, LCD_H_RES, LCD_V_RES, (uint8_t *)menu_buffer);
+            content_changed = false;
+        }
+
+        //******************************* */
+        if (touchX > 0 && touchY > 0)
+        {
+            // OBSŁUGA PRZYCISKU MINUS (ZAKRES OD 2026 ROKU)
+            if (touchX >= 200 && touchX <= 600 && touchY >= 50 && touchY <= 350 &&
+                (hold_counter == 1 || (hold_counter > 500 && hold_counter % 15 == 0)))
+            {
+                current_edit_year = (current_edit_year == 2026) ? 2099 : current_edit_year - 1;
+                content_changed = true;
+            }
+            // OBSŁUGA PRZYCISKU PLUS (ZAKRES DO 2099 ROKU)
+            else if (touchX >= 200 && touchX <= 600 && touchY >= 950 && touchY <= 1250 &&
+                     (hold_counter == 1 || (hold_counter > 500 && hold_counter % 15 == 0)))
+            {
+                current_edit_year = (current_edit_year == 2099) ? 2026 : current_edit_year + 1;
+                content_changed = true;
+            }
+            // OBSŁUGA PRZYCISKU DONE Z WALIDACJĄ I ZAPISEM DO RTC
+            else if (touchX >= 50 && touchX <= 250 && touchY >= 450 && touchY <= 850)
+            {
+                // SPRAWDZAMY CZY DZIEŃ NIE PRZEKRACZA LIMITU DLA NOWEGO ROKU
+                uint8_t max_days = get_max_days_in_month(current_edit_year, setup_time.month);
+                if (setup_time.day > max_days)
+                {
+                    setup_time.day = max_days; // COFAMY DZIEŃ DO KRAWĘDZI (NP. 29 -> 28 LUTY)
+                }
+                setup_time.year = current_edit_year;
+
+                if (rx8025t_set_time(&setup_time) == ESP_OK)
+                {
+                    sync_internal_rtc_with_rx8025t();
+                }
+                break;
+            }
+            hold_counter++;
+        }
+        else
+        {
+            hold_counter = 0;
+        }
+        if (touchX == 0 && touchY == 0)
+        {
+            vTaskDelay(pdMS_TO_TICKS(10));
+        }
+    }
+    printf("[MENU] Done pressed. Czekam na puszczenie ekranu...\n");
+    wait_for_release();
 }
+
 //=====================================================================================================
 //=====================================================================================================
 //=====================================================================================================
 void set_month_menu(void)
 {
-    // Zakres: 1 - 12
-    // DONE: final_time.month = current_month -> Zapis RTC -> break;
+    uint16_t touchX = 0, touchY = 0;
+    int hold_counter = 0;
+    is_editing_time = true;
+    wait_for_release();
+
+    rx8025t_time_t setup_time;
+    if (rx8025t_get_time(&setup_time) != ESP_OK)
+    {
+        is_editing_time = false;
+        return;
+    }
+
+    int current_edit_month = setup_time.month;
+    uint16_t *menu_buffer = (uint16_t *)fbs[0];
+    bool content_changed = true;
+    while (is_editing_time)
+    {
+        touchX = 0;
+        touchY = 0;
+        if (!touch.getTouch(&touchX, &touchY))
+        {
+            touchX = 0;
+            touchY = 0;
+        }
+
+        if (content_changed)
+        {
+            draw_common_menu_base();
+            draw_text_90(menu_buffer, LCD_H_RES, LCD_V_RES, " SET MONTH", 280, 20, 150.0f, 0xFFFF);
+
+            char txt_current_month[16];
+            snprintf(txt_current_month, sizeof(txt_current_month), "%02d", current_edit_month);
+
+            draw_clock_perfect_monospace_90(menu_buffer, LCD_H_RES, LCD_V_RES, digital_7_ttf, txt_current_month, 470, 250, 220.0f, 0xFFFF);
+            show_debug_touch(touchX, touchY);
+            esp_cache_msync((void *)menu_buffer, BUFFER_SIZE, ESP_CACHE_MSYNC_FLAG_DIR_C2M);
+            xSemaphoreTake(vsync_sem, portMAX_DELAY);
+            lcd.lcd_draw_bitmap(0, 0, LCD_H_RES, LCD_V_RES, (uint8_t *)menu_buffer);
+            content_changed = false;
+        }
+        if (touchX > 0 && touchY > 0)
+        {
+            if (touchX >= 200 && touchX <= 600 && touchY >= 50 && touchY <= 350 &&
+                (hold_counter == 1 || (hold_counter > 500 && hold_counter % 15 == 0)))
+            {
+                current_edit_month = (current_edit_month == 1) ? 12 : current_edit_month - 1;
+                content_changed = true;
+            }
+            else if (touchX >= 200 && touchX <= 600 && touchY >= 950 && touchY <= 1250 &&
+                     (hold_counter == 1 || (hold_counter > 500 && hold_counter % 15 == 0)))
+            {
+                current_edit_month = (current_edit_month == 12) ? 1 : current_edit_month + 1;
+                content_changed = true;
+            }
+            else if (touchX >= 50 && touchX <= 250 && touchY >= 450 && touchY <= 850)
+            {
+                // Korekta dni miesiąca oraz zapis do RTC
+                int full_year = setup_time.year;
+                if (full_year < 2000)
+                    full_year += 2000;
+
+                uint8_t max_days = get_max_days_in_month(full_year, current_edit_month);
+                if (setup_time.day > max_days)
+                {
+                    setup_time.day = max_days;
+                }
+
+                setup_time.month = current_edit_month;
+                if (rx8025t_set_time(&setup_time) == ESP_OK)
+                {
+                    sync_internal_rtc_with_rx8025t();
+                }
+                break;
+            }
+            hold_counter++;
+        }
+        else
+        {
+            hold_counter = 0;
+        }
+        if (touchX == 0 && touchY == 0)
+        {
+            vTaskDelay(pdMS_TO_TICKS(10));
+        }
+    }
+    printf("[MENU] Done pressed. Czekam na puszczenie ekranu...\n");
+    wait_for_release();
 }
+
 //=====================================================================================================
 //=====================================================================================================
 //=====================================================================================================
@@ -1111,11 +1424,30 @@ uint8_t load_brightness_from_NVS(void)
     }
     return saved_brightness;
 }
-
 //=====================================================================================================
 //=====================================================================================================
 //=====================================================================================================
-
+//=====================================================================================================
+// ZWRACA MAKSYMALNĄ LICZBĘ DNI DLA PODANEGO MIESIĄCA I ROKU (UWZGLĘDNIA LATA PRZESTĘPNE)
+//=====================================================================================================
+uint8_t get_max_days_in_month(int year, uint8_t month)
+{
+    if (month == 2)
+    {
+        // Rok przestępny: podzielny przez 4, ale nie przez 100, chyba że podzielny przez 400
+        if ((year % 4 == 0 && year % 100 != 0) || (year % 400 == 0))
+        {
+            return 29;
+        }
+        return 28;
+    }
+    // Kwiecień, Czerwiec, Wrzesień, Listopad mają 30 dni
+    if (month == 4 || month == 6 || month == 9 || month == 11)
+    {
+        return 30;
+    }
+    return 31;
+}
 //=====================================================================================================
 //=====================================================================================================
 //=====================================================================================================
