@@ -12,6 +12,10 @@
 #include "freertos/semphr.h"
 #include "esp_cache.h"
 #include "esp_log.h"
+#include "driver/ledc.h"
+
+#include "nvs_flash.h"
+#include "nvs.h"
 
 // Naglowki Twojego podsystemu graficznego i sprzetu
 #include "renderer.hpp"
@@ -21,11 +25,21 @@
 #include "pins_config.h"
 #include "rx8025t.h"
 //=====================================================================================================
+// Definicje dla kanału PWM
+#define BACKLIGHT_GPIO 23
+#define BACKLIGHT_LEDC_TIMER LEDC_TIMER_0
+#define BACKLIGHT_LEDC_MODE LEDC_LOW_SPEED_MODE
+#define BACKLIGHT_LEDC_CHANNEL LEDC_CHANNEL_0
+#define BACKLIGHT_LEDC_DUTY_RES LEDC_TIMER_10_BIT // Rozdzielczość 10-bitowa (0 - 1023)
+#define BACKLIGHT_LEDC_FREQUENCY 5000             // Częstotliwość 5 kHz
+//=====================================================================================================
 // Deklaracje obiektow i buforow zdefiniowanych w main.cpp
 extern jd9365_lcd lcd;
 
 // ZAMYKAMY DEKLARACJĘ DOTYKU W BLOKU ZGODNOŚCI "C":
 extern gsl3680_touch touch;
+
+extern uint8_t BRIGHTNESS;
 
 extern uint16_t *fbs[2];
 extern volatile int back_buffer_idx;
@@ -45,11 +59,14 @@ static time_t sekundy_epoch;
 static char txt_godz[4];
 static char txt_min[4];
 static char txt_sek[4];
+
 volatile bool is_editing_time = false;
 
 volatile int current_day = 1;     // Zakres 1 - 31 (zależnie od miesiąca)
 volatile int current_month = 1;   // Zakres 1 - 12
 volatile int current_year = 2026; // Zakres np. 2026 - 2099
+
+volatile uint8_t current_brightness = 50;
 
 static int old_seconds = 111; // Zmienna do filtrowania zbocza sekundy (Edge Detection)
 //=====================================================================================================
@@ -145,14 +162,22 @@ void vTaskTouch(void *pvParameters)
                     }
                 }
             }
-            // 3. HIT-BOX: SEKUNDNIK (Dół ekranu poziomego) - Przechodzi na oddzielny warunek dla osi X
-            else if (touchX >= 1 && touchX < 300)
+
+            // 5. HIT-BOX: WEJŚCIE DO MENU JASNOŚCI (Osobny, czysty warunek)
+            if (touchX >= 1 && touchX <= 120 && touchY >= 880 && touchY <= 1279)
             {
-                printf("[MENU] -> Wykryto kliknięcie w DOLNY PANEL / SEKUNDNIK!\n");
+                printf("[TOUCH] -> Wykryto kliknięcie w strefę regulacji jasności!\n");
+                if (hTaskMenuEngine != NULL)
+                {
+                    is_editing_time = true;
+                    xTaskNotify(hTaskMenuEngine, 3, eSetValueWithOverwrite); // Wybudzamy silnik wartością 3
+                    vTaskSuspend(NULL);                                      // Samozawieszenie wątku dotyku
+                }
+                old_seconds = 111;
             }
 
             // 4. HIT-BOX: BŁYSKAWICZNE ZEROWANIE SEKUND (Dodatkowy przycisk na ekranie głównym)
-            if (touchX >= 80 && touchX <= 200 && touchY >= 120 && touchY <= 300)
+            if (touchX >= 190 && touchX <= 300 && touchY >= 20 && touchY <= 240)
             {
                 printf("[TOUCH] -> Wyzwalanie zerowania sekund z ekranu głównego!\n");
 
@@ -201,7 +226,9 @@ void print_RTC(void)
     {
         return;
     }
+    char tekst[32];
 
+    uint16_t *main_buffer = (uint16_t *)fbs[0];
     // TWARDE WYCZYSZCZENIE CACHE PRZED STARTEM RENDERU ZEGARA
     esp_cache_msync((void *)fbs[0], BUFFER_SIZE, ESP_CACHE_MSYNC_FLAG_DIR_M2C | ESP_CACHE_MSYNC_FLAG_INVALIDATE);
 
@@ -222,23 +249,35 @@ void print_RTC(void)
         return;
     }
     old_seconds = second_now;
+    char txt_slider_pct[16];
+    snprintf(txt_slider_pct, sizeof(txt_slider_pct), "%d%%", BRIGHTNESS);
 
+    snprintf(tekst, sizeof(tekst), "%04d-%02d-%02d", (dane_czasu.tm_year + 1900), (dane_czasu.tm_mon + 1), dane_czasu.tm_mday);
     snprintf(txt_godz, sizeof(txt_godz), "%02d", dane_czasu.tm_hour);
     snprintf(txt_min, sizeof(txt_min), "%02d", dane_czasu.tm_min);
     snprintf(txt_sek, sizeof(txt_sek), "%02d", dane_czasu.tm_sec);
 
-    // 1. Pobieramy wskaźniki na oba sprzętowe bufory z main.cpp
-
-    uint16_t *main_buffer = (uint16_t *)fbs[0];
-
     // 1. Czyszczenie jedynego bufora na czarno
     safe_clear_screen(main_buffer, 0x0000);
-
+    if (is_editing_time == true)
+    {
+        return;
+    }
+    int width_bar = 380 * BRIGHTNESS / 100;
     // 2. Rysowanie bazy zegara (czcionki wektorowe bezpośrednio na nim)
     draw_clock_perfect_monospace_90(main_buffer, LCD_H_RES, LCD_V_RES, digital_7_ttf, txt_godz, 0, 0, 370.0f, 0xFFFF);
     draw_clock_perfect_monospace_90(main_buffer, LCD_H_RES, LCD_V_RES, digital_7_ttf, txt_min, 680, 0, 370.0f, 0xFFFF);
-    draw_clock_perfect_monospace_90(main_buffer, LCD_H_RES, LCD_V_RES, digital_7_ttf, txt_sek, 140, 610, 100.0f, 0xFFFF);
-
+    draw_clock_perfect_monospace_90(main_buffer, LCD_H_RES, LCD_V_RES, digital_7_ttf, txt_sek, 80, 500, 100.0f, 0xFFFF);
+    draw_clock_perfect_monospace_90(main_buffer, LCD_H_RES, LCD_V_RES, digital_7_ttf, tekst, 20, 670, 100.0f, 0xFFFF);
+    draw_hollow_rectangle_90(main_buffer, LCD_H_RES, LCD_V_RES, 880, 672, 395, 120, 4, 0x07E0);
+    draw_rectangle_90(main_buffer, LCD_H_RES, LCD_V_RES, 888, 680, width_bar, 104, 0xF100); // 100% = 380 widh
+    int week_day = calc_dow((dane_czasu.tm_year + 1900), (dane_czasu.tm_mon + 1), dane_czasu.tm_mday);
+    draw_text_90(main_buffer, LCD_H_RES, LCD_V_RES, getDayofweek(week_day), 350, 455, 200.0f, 0xFFFF);
+    draw_text_90(main_buffer, LCD_H_RES, LCD_V_RES, txt_slider_pct, 1020, 690, 80.0f, 0xFFFF);
+    if (is_editing_time == true)
+    {
+        return;
+    }
     // 3. Od razu na nim zapalamy kwadraciki dwukropka
     draw_rectangle_90(main_buffer, LCD_H_RES, LCD_V_RES, 605, 104, 50, 50, 0xFFFF);
     draw_rectangle_90(main_buffer, LCD_H_RES, LCD_V_RES, 605, 300, 50, 50, 0xFFFF);
@@ -247,7 +286,15 @@ void print_RTC(void)
     esp_cache_msync((void *)main_buffer, BUFFER_SIZE, ESP_CACHE_MSYNC_FLAG_DIR_C2M);
 
     // 5. Czekamy na VSYNC i wypychamy DMA na ekran MIPI-DSI
+    if (is_editing_time == true)
+    {
+        return;
+    }
     xSemaphoreTake(vsync_sem, portMAX_DELAY);
+    if (is_editing_time == true)
+    {
+        return;
+    }
     lcd.lcd_draw_bitmap(0, 0, LCD_H_RES, LCD_V_RES, (uint8_t *)main_buffer);
 
     // 6. Wybudzamy task gaszenia dwukropka (który po 500 ms tylko go zamaluje na czarno)
@@ -496,6 +543,10 @@ void vTaskMenuEngine(void *pvParameters)
         else if (menu_choice == 2)
         {
             set_hours_menu();
+        }
+        else if (menu_choice == 3)
+        {
+            set_light_menu(); // Wywołanie naszego nowego menu jasności
         }
 
         // --- KLUCZOWY FIX PO WCIŚNIĘCIU DONE ---
@@ -761,22 +812,305 @@ void set_month_menu(void)
 //=====================================================================================================
 //=====================================================================================================
 //=====================================================================================================
+// Uniwersalna funkcja do ustawiania jasności (0 - 100%)
+void set_backlight_brightness(uint8_t percentage)
+{
+    if (percentage > 100)
+        percentage = 100;
+    if (percentage < 5)
+        percentage = 5;
+    // Przeliczenie procentów (0-100) na wartość 10-bitową (0-1023)
+    uint32_t duty = (percentage * 1023) / 100;
+    BRIGHTNESS = percentage;
+
+    ledc_set_duty(BACKLIGHT_LEDC_MODE, BACKLIGHT_LEDC_CHANNEL, duty);
+    ledc_update_duty(BACKLIGHT_LEDC_MODE, BACKLIGHT_LEDC_CHANNEL);
+
+    // printf("[PWM] Jasność zmieniona na: %d%%\n", percentage);
+}
+//=====================================================================================================
+//=====================================================================================================
+//=====================================================================================================
+void reconfig_pin_bl_to_pwm(void)
+{
+    // 1. Konfiguracja timera LEDC - ZWRÓĆ UWAGĘ NA DOPISANE .deconfigure NA KOŃCU!
+    ledc_timer_config_t ledc_timer = {
+        .speed_mode = BACKLIGHT_LEDC_MODE,
+        .duty_resolution = BACKLIGHT_LEDC_DUTY_RES,
+        .timer_num = BACKLIGHT_LEDC_TIMER,
+        .freq_hz = BACKLIGHT_LEDC_FREQUENCY,
+        .clk_cfg = LEDC_AUTO_CLK,
+        .deconfigure = false // <<< TA LINIA USUNIE WARNING Z LINII 819!
+    };
+    ledc_timer_config(&ledc_timer);
+
+    // 2. Konfiguracja kanału LEDC - ZWRÓĆ UWAGĘ NA DOPISANE .sleep_mode ORAZ .flags NA KOŃCU!
+    ledc_channel_config_t ledc_channel = {
+        .gpio_num = BACKLIGHT_GPIO,
+        .speed_mode = BACKLIGHT_LEDC_MODE,
+        .channel = BACKLIGHT_LEDC_CHANNEL,
+        .intr_type = LEDC_INTR_DISABLE,
+        .timer_sel = BACKLIGHT_LEDC_TIMER,
+        .duty = 1023, // Na start ustawiamy 100% jasności (10-bit max)
+        .hpoint = 0,
+        .sleep_mode = LEDC_SLEEP_MODE_NO_ALIVE_NO_PD, // <<< TA LINIA USUNIE WARNING O sleep_mode!
+        .flags = {.output_invert = 0}                 // <<< TA LINIA USUNIE WARNING O flags!
+    };
+    ledc_channel_config(&ledc_channel);
+
+    printf("[PWM] Pin 23 został pomyślnie REKONFIGUROWANY na tryb PWM (10-bit, 5kHz).\n");
+}
+
+// void rekonfiguruj_pin_bl_na_pwm(void)
+// {
+//     // 1. Konfiguracja timera LEDC
+//     ledc_timer_config_t ledc_timer = {
+//         .speed_mode = BACKLIGHT_LEDC_MODE,
+//         .duty_resolution = BACKLIGHT_LEDC_DUTY_RES,
+//         .timer_num = BACKLIGHT_LEDC_TIMER,
+//         .freq_hz = BACKLIGHT_LEDC_FREQUENCY,
+//         .clk_cfg = LEDC_AUTO_CLK};
+//     ledc_timer_config(&ledc_timer);
+
+//     // 2. Konfiguracja kanału LEDC i przejęcie pinu 23
+//     ledc_channel_config_t ledc_channel =
+//         {
+//             .gpio_num = BACKLIGHT_GPIO,
+//             .speed_mode = BACKLIGHT_LEDC_MODE,
+//             .channel = BACKLIGHT_LEDC_CHANNEL,
+//             .intr_type = LEDC_INTR_DISABLE,
+//             .timer_sel = BACKLIGHT_LEDC_TIMER,
+//             .duty = 1023, // Na start ustawiamy 100% jasności (10-bit max)
+//             .hpoint = 0,
+//             .sleep_mode = (ledc_sleep_mode_t)0 // <<< Twarde wyzerowanie pola uśpienia
+//     };
+//     ledc_channel_config(&ledc_channel);
+
+//     printf("[PWM] Pin 23 został pomyślnie REKONFIGUROWANY na tryb PWM (10-bit, 5kHz).\n");
+// }
 
 //=====================================================================================================
 //=====================================================================================================
 //=====================================================================================================
+// Definicja globalnej zmiennej dla jasności (zakres 2 - 100)
+
+void set_light_menu(void)
+{
+    uint16_t touchX = 0;
+    uint16_t touchY = 0;
+    uint16_t *menu_buffer = (uint16_t *)fbs[0];
+    safe_clear_screen(menu_buffer, 0x0000);
+    esp_cache_msync((void *)menu_buffer, BUFFER_SIZE, ESP_CACHE_MSYNC_FLAG_DIR_C2M);
+    bool content_changed = true;
+
+    // 1. Czyszczenie bufora na czarno (czysta karta pod nową klatkę menu)
+    safe_clear_screen(menu_buffer, 0x0000);
+
+    // 2. To ZOSTAJE: Napis nagłówkowy menu
+    draw_text_90(menu_buffer, LCD_H_RES, LCD_V_RES, " SET LIGHT", 300, 20, 150.0f, 0xFFFF);
+
+    // 4. To ZOSTAJE: Przycisk DONE (Ramka i napis) - użytkownik musi jakoś wyjść z menu
+    draw_text_90(menu_buffer, LCD_H_RES, LCD_V_RES, "DONE", 510, 580, 150.0f, 0xFFFF);
+    draw_hollow_rectangle_90(menu_buffer, LCD_H_RES, LCD_V_RES, 390, 600, 500, 120, 4, 0xFFFF);
+    // Rysowanie zewnętrznej ramki suwaka (szerokość 1000, wysokość 120, na Y = 350)
+    draw_hollow_rectangle_90(menu_buffer, LCD_H_RES, LCD_V_RES, 132, 342, 1018, 136, 4, 0xFFFF);
+
+    while (1)
+    {
+        touchX = 0;
+        touchY = 0;
+        if (!touch.getTouch(&touchX, &touchY))
+        {
+            touchX = 0;
+            touchY = 0;
+        }
+
+        if (content_changed == true)
+        {
+
+            // ==========================================
+            // TUTAJ WSTAWIASZ NOWĄ PACZKĘ 1 (RYSOWANIE SUWAKA):
+            // ==========================================
+
+            // Wyliczenie szerokości zielonego wypełnienia (1% = 10 pikseli)
+            uint16_t len_draw = current_brightness * 10;
+
+            // Rysowanie zielonego paska jasności wewnątrz ramki
+            draw_rectangle_90(menu_buffer, LCD_H_RES, LCD_V_RES, 141, 351, len_draw, 118, 0x07E0);
+
+            // Czyszczenie pozostałej części paska na czarno
+            draw_rectangle_90(menu_buffer, LCD_H_RES, LCD_V_RES, 141 + len_draw, 351, 1000 - len_draw, 118, 0x0000);
+            // ==========================================
+            // 4A. Dynamiczny tekst procentowy na środku suwaka (rysowany PO pasku)
+            char txt_slider_pct[16];
+            snprintf(txt_slider_pct, sizeof(txt_slider_pct), "%d%%", current_brightness);
+            // Używamy czcionki tekstowej (systemowej) o rozmiarze 100.0f, wyśrodkowanej w pasku
+            draw_text_90(menu_buffer, LCD_H_RES, LCD_V_RES, txt_slider_pct, 600, 360, 100.0f, 0xFFFF);
+
+            // 5. To ZOSTAJE: Rysowanie debugowania pozycji dotyku
+            show_debug_touch(touchX, touchY);
+
+            // 6. To ZOSTAJE: Synchronizacja Cache i wypchnięcie klatki przez DMA na MIPI-DSI
+            esp_cache_msync((void *)menu_buffer, BUFFER_SIZE, ESP_CACHE_MSYNC_FLAG_DIR_C2M);
+            xSemaphoreTake(vsync_sem, portMAX_DELAY);
+            lcd.lcd_draw_bitmap(0, 0, LCD_H_RES, LCD_V_RES, (uint8_t *)menu_buffer);
+
+            content_changed = false;
+        }
+        // =========================================================================
+        // OBSŁUGA DOTYKU I SUWAKA (Kopiuj od tego miejsca aż do samego końca funkcji)
+        // =========================================================================
+        if (touchX > 0 && touchY > 0)
+        {
+            if (touchY >= 140 && touchY <= 1140 && touchX >= 347 && touchX <= 473)
+            {
+                current_brightness = (touchY - 140) / 10;
+                if (current_brightness > 100)
+                    current_brightness = 100;
+                if (current_brightness < 5)
+                    current_brightness = 5;
+                set_backlight_brightness(current_brightness);
+                content_changed = true;
+                // printf("[SLIDER] Jasnosc touchY: %d -> %d%%\n", touchY, current_brightness);
+            }
+            else if (touchX >= 50 && touchX <= 250 && touchY >= 450 && touchY <= 850)
+            {
+                save_brightness_to_NVS(current_brightness);
+                break;
+            }
+        }
+
+        vTaskDelay(pdMS_TO_TICKS(1)); // Standardowe 60Hz, gdy ekran odpoczywa
+
+    } // Koniec pętli: while (1)
+
+    printf("[MENU] Done pressed. Czekam na puszczenie ekranu...\n");
+    wait_for_release();
+}
+//=====================================================================================================
+//=====================================================================================================
+//=====================================================================================================
+//=====================================================================================================
+// TWOJA FUNKCJA Z STM32 ZWRACAJĄCA WSKAŹNIK NA STRINGS DNIA TYGODNIA (ZAKRES OTRZYMANY 1-7)
+//=====================================================================================================
+const char *getDayofweek(uint8_t number)
+{
+    if (number == 0)
+    {
+        number = 1;
+    }
+    if (number > 7)
+    {
+        number = 7;
+    }
+
+    // TABLICA STATYCZNA CONST DLA BEZPIECZEŃSTWA PAMIĘCI W C++
+    static const char *weekday[] = {"MONDAY", "TUESDAY", "WEDNESDAY", "THURSDAY", "FRIDAY", "SATURDAY", "SUNDAY"};
+    return weekday[number - 1];
+}
 
 //=====================================================================================================
+// TWÓJ SPRAWDZONY ALGORYTM LICZENIA DNIA TYGODNIA (ZWRACA 1 = PONIEDZIAŁEK, ..., 7 = NIEDZIELA)
+//=====================================================================================================
+int calc_dow(int y, int m, int d)
+{
+    int result;
+    y -= m < 3;
+    result = (y + y / 4 - y / 100 + y / 400 + "-bed=pen+mad."[m] + d) % 7;
+    if (result == 0)
+    {
+        result = 7;
+    }
+    return result;
+}
+//=====================================================================================================
+//=====================================================================================================
+//=====================================================================================================
+//=====================================================================================================
+// BEZPIECZNA INICJALIZACJA PAMIĘCI NVS (WYWOŁYWANA RAZ NA STARCIE PROJEKTU)
+//=====================================================================================================
+void init_NVS_system(void)
+{
+    esp_err_t err = nvs_flash_init();
+    if (err == ESP_ERR_NVS_NO_FREE_PAGES || err == ESP_ERR_NVS_NEW_VERSION_FOUND)
+    {
+        // Jeśli pamięć jest uszkodzona lub ma złą wersję, czyścimy ją i stawiamy od nowa
+        ESP_ERROR_CHECK(nvs_flash_erase());
+        err = nvs_flash_init();
+    }
+    ESP_ERROR_CHECK(err);
+    printf("[NVS] Podsystem pamięci nieulotnej został pomyślnie zainicjalizowany.\n");
+}
+//=====================================================================================================
 //=====================================================================================================
 //=====================================================================================================
 
 //=====================================================================================================
+// ZAPIS WARTOŚCI JASNOŚCI DO PAMIĘCI NIEULOTNEJ NVS
+//=====================================================================================================
+void save_brightness_to_NVS(uint8_t brightness_val)
+{
+    nvs_handle_t my_handle;
+    esp_err_t err;
+
+    // Otwieramy przestrzeń nazw "storage" w trybie ZAPIS/ODCZYT
+    err = nvs_open("storage", NVS_READWRITE, &my_handle);
+    if (err == ESP_OK)
+    {
+        // Zapisujemy wartość pod kluczem "bl_light" (max 15 znaków!)
+        err = nvs_set_u8(my_handle, "bl_light", brightness_val);
+        if (err == ESP_OK)
+        {
+            // Kluczowe! commit wypycha dane fizycznie z bufora ramu do struktury flash
+            err = nvs_commit(my_handle);
+            if (err == ESP_OK)
+            {
+                printf("[NVS] Nowa jasność [%d%%] została trwale zapisana we Flashu.\n", brightness_val);
+            }
+        }
+        // Zamykamy uchwyt, zwalniając zasoby systemowe
+        nvs_close(my_handle);
+    }
+    else
+    {
+        printf("[NVS_ERROR] Nie udało się otworzyć pamięci do zapisu! Kod: %d\n", err);
+    }
+}
+//=====================================================================================================
 //=====================================================================================================
 //=====================================================================================================
 
 //=====================================================================================================
+// ODCZYT JASNOŚCI Z PAMIĘCI NVS (JEŚLI BRAK WPISU, DAJE WARTOŚĆ DOMYŚLNĄ)
 //=====================================================================================================
-//=====================================================================================================
+uint8_t load_brightness_from_NVS(void)
+{
+    nvs_handle_t my_handle;
+    esp_err_t err;
+    uint8_t saved_brightness = 50; // Domyślna wartość, jeśli pamięć jest jeszcze pusta
+
+    err = nvs_open("storage", NVS_READONLY, &my_handle);
+    if (err == ESP_OK)
+    {
+        // Próbujemy odczytać wartość zapisaną pod kluczem "bl_light"
+        err = nvs_get_u8(my_handle, "bl_light", &saved_brightness);
+        if (err == ESP_ERR_NVS_NOT_FOUND)
+        {
+            printf("[NVS] Brak zapisu jasności. Ustawiono domyślne: 50%%\n");
+            saved_brightness = 50;
+        }
+        else if (err == ESP_OK)
+        {
+            printf("[NVS] Odczytano zapisaną jasność z Flash: %d%%\n", saved_brightness);
+        }
+        nvs_close(my_handle);
+    }
+    else
+    {
+        printf("[NVS_ERROR] Nie udało się otworzyć pamięci do odczytu. Domyślnie: 50%%\n");
+    }
+    return saved_brightness;
+}
 
 //=====================================================================================================
 //=====================================================================================================
