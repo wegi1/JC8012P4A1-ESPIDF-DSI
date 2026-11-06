@@ -311,7 +311,7 @@ void init_RTC_subsystem(void)
     printf("[HEX_DIAG] Adres statycznego bufora BMP:    %p\n", (void *)g_statyczny_bufor_bmp);
     printf("[HEX_DIAG] Adres sprzętowego bufora ekranu fbs[0]: %p\n", (void *)fbs[0]);
 
-     // TESTOWE WYŚWIETLENIE PIERWSZEGO ZDJĘCIA (Zaraz po starcie na chwilę pokaże FOTO1.bmp!)
+    // TESTOWE WYŚWIETLENIE PIERWSZEGO ZDJĘCIA (Zaraz po starcie na chwilę pokaże FOTO1.bmp!)
     set_backlight_brightness(100);
     wyswietl_bmp_ze_spiffs("/spiffs/FOTO1.bmp");
     vTaskDelay(pdMS_TO_TICKS(3000)); // Pokazuj zdjęcie przez 3 sekundy, zanim wystartuje główny zegar!
@@ -1621,7 +1621,7 @@ void vTaskAutoPhotoTimer(void *pvParameters)
     printf("[SYSTEM] Zadanie auto-foto co 5 minut wystartovalo.\n");
     while (1)
     {
-        vTaskDelay(pdMS_TO_TICKS(6 * 1000));
+        vTaskDelay(pdMS_TO_TICKS(5 * 60 * 1000));
         // vTaskDelay(pdMS_TO_TICKS(5 * 60 * 1000));
         g_trigger_auto_photo = true;
         printf("[TIMER] Minelo 5 minut! Wyzwalam pokaz zdjecia.\n");
