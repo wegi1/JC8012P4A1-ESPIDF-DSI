@@ -13,9 +13,13 @@
 #include "esp_cache.h"
 #include "esp_log.h"
 #include "driver/ledc.h"
+#include "esp_private/periph_ctrl.h"
 
 #include "nvs_flash.h"
 #include "nvs.h"
+#include "esp_spiffs.h"
+
+#include "esp_cache.h"
 
 // Naglowki Twojego podsystemu graficznego i sprzetu
 #include "renderer.hpp"
@@ -67,8 +71,17 @@ volatile int current_month = 1;   // Zakres 1 - 12
 volatile int current_year = 2026; // Zakres np. 2026 - 2099
 
 volatile uint8_t current_brightness = 50;
-
+volatile uint32_t g_my_4h_counter = 0;
+volatile bool g_trigger_auto_photo = false;
+volatile int PHOTO_NR = 0;    // Zmienna globalna do przechowywania numeru aktualnego zdjęcia (1 lub 2)
 static int old_seconds = 111; // Zmienna do filtrowania zbocza sekundy (Edge Detection)
+
+// NOWOŚĆ: Te wskaźniki zostaną idealnie wyrównane matematycznie i podane do dekodera
+uint8_t *g_statyczny_bufor_rgb888 = NULL;
+uint8_t *g_statyczny_bufor_bmp = NULL;
+const size_t ROZMIAR_MAX_BMP = 1280 * 800 * 3 + 64;
+const size_t ROZMIAR_RGB888 = 1280 * 800 * 3 + 64; // Zapas 64B dla msync
+
 //=====================================================================================================
 //=====================================================================================================
 //=====================================================================================================
@@ -230,6 +243,48 @@ void vTaskTouch(void *pvParameters)
             vTaskDelay(pdMS_TO_TICKS(250));
         }
 
+        // synchronixacja RTC z RX8025T co 4 godziny (g_my_4h_counter jest inkrementowany w vTaskFourHourIncrementer)
+        if (g_my_4h_counter != 0)
+        {
+            sync_internal_rtc_with_rx8025t();
+
+            old_seconds = 111;
+            g_my_4h_counter = 0;
+            printf("[RESYNC] -> Zsynchronizowano RTC z RX8025T...\n");
+        }
+
+        // Wyzwalanie pokazu zdjęcia co 5 minut (g_trigger_auto_photo jest ustawiany w vTaskAutoPhotoTimer)
+        if (g_trigger_auto_photo == true)
+        {
+            printf("[TOUCH] Przechwycono sygnal auto-foto! Blokuje czas i skacze do wyswietlarki...\n");
+            is_editing_time = true;
+
+            if (PHOTO_NR == 0)
+            {
+                wyswietl_bmp_ze_spiffs("/spiffs/FOTO1.bmp");
+            }
+            else
+            {
+                wyswietl_bmp_ze_spiffs("/spiffs/FOTO2.bmp");
+            }
+            old_seconds = 111;
+            vTaskDelay(pdMS_TO_TICKS(5 * 1000));
+
+            // Twardy reset bufora ramki na czarno po zakończeniu zdjęcia, aby wyczyścić potok DMA:
+            uint16_t *clear_buf = (uint16_t *)fbs[0];
+            safe_clear_screen(clear_buf, 0x0000);
+            esp_cache_msync((void *)clear_buf, BUFFER_SIZE, ESP_CACHE_MSYNC_FLAG_DIR_C2M | ESP_CACHE_MSYNC_FLAG_INVALIDATE);
+            xSemaphoreTake(vsync_sem, portMAX_DELAY);
+            lcd.lcd_draw_bitmap(0, 0, LCD_H_RES, LCD_V_RES, (uint8_t *)clear_buf);
+
+            old_seconds = 111;
+            PHOTO_NR = PHOTO_NR ^ 1; // Przełączanie między FOTO1 a FOTO2 (0 <-> 1)
+            g_trigger_auto_photo = false;
+            is_editing_time = false;
+            printf("[TOUCH] Pokaz zakonczony, wracam do zegara glownego.\n");
+            vTaskDelay(pdMS_TO_TICKS(500));
+        }
+
         vTaskDelay(pdMS_TO_TICKS(20));
     }
 }
@@ -240,6 +295,65 @@ void vTaskTouch(void *pvParameters)
 // Funkcja wywoływana raz w app_main() w celu rejestracji zadań w jądrze FreeRTOS
 void init_RTC_subsystem(void)
 {
+    // NOWOŚĆ: Montujemy dysk zanim ruszą zadania FreeRTOS
+    init_spiffs_storage();
+    printf("[SYSTEM] Alokacja statycznych buforów graficznych w PSRAM...\n");
+
+    printf("[SYSTEM] Alokacja statycznych buforów graficznych w PSRAM z wyrownaniem 64B...\n");
+
+    // Zaokrąglamy rozmiary buforów do wielokrotności 64 bajtów dla Cache
+    // TO WSTAWIASZ W ZAMIAN:
+    g_statyczny_bufor_bmp = (uint8_t *)heap_caps_malloc(ROZMIAR_MAX_BMP, MALLOC_CAP_SPIRAM);
+    if (g_statyczny_bufor_bmp == NULL)
+    {
+        printf("[KRK] BLAD KRYTYCZNY: Brak pamieci w PSRAM dla bufora BMP!\n");
+    }
+    else
+    {
+        printf("[SYSTEM_SUCCESS] Zarezerwowano bufor dla podsystemu graficznego BMP.\n");
+    }
+
+    // Drukowanie adresów fizycznych buforów w formacie HEX
+    printf("[HEX_DIAG] Adres statycznego bufora BMP:    %p\n", (void *)g_statyczny_bufor_bmp);
+    printf("[HEX_DIAG] Adres statycznego bufora RGB888: %p\n", (void *)g_statyczny_bufor_rgb888);
+    printf("[HEX_DIAG] Adres sprzętowego bufora ekranu fbs[0]: %p\n", (void *)fbs[0]);
+
+    // POWRÓT DO STAREJ, DZIAŁAJĄCEJ METODY 1:1 (Bez aligned!)
+    // g_statyczny_bufor_jpg = (uint8_t *)heap_caps_malloc(ROZMIAR_MAX_JPG, MALLOC_CAP_SPIRAM);
+    // g_statyczny_bufor_rgb888 = (uint8_t *)heap_caps_malloc(ROZMIAR_RGB888, MALLOC_CAP_SPIRAM);
+
+    if (g_statyczny_bufor_bmp == NULL || g_statyczny_bufor_rgb888 == NULL)
+    {
+        printf("[KRK] BLAD KRYTYCZNY: Nie udalo sie zarezerwowac pamieci startowej w PSRAM!\n");
+    }
+    else
+    {
+        printf("[SYSTEM_SUCCESS] Zarezerwowano 4.07 MB w PSRAM na stale dla podsystemu BMP.\n");
+    }
+
+    // TESTOWE WYŚWIETLENIE PIERWSZEGO ZDJĘCIA (Zaraz po starcie na chwilę pokaże FOTO1.bmp!)
+    set_backlight_brightness(100);
+    wyswietl_bmp_ze_spiffs("/spiffs/FOTO1.bmp");
+    vTaskDelay(pdMS_TO_TICKS(3000)); // Pokazuj zdjęcie przez 3 sekundy, zanim wystartuje główny zegar!
+    uint32_t duty;
+    for (uint8_t t = 100; t > 0; t--)
+    {
+        duty = (t * 1023) / 100;
+        ledc_set_duty(BACKLIGHT_LEDC_MODE, BACKLIGHT_LEDC_CHANNEL, duty);
+        ledc_update_duty(BACKLIGHT_LEDC_MODE, BACKLIGHT_LEDC_CHANNEL);
+        vTaskDelay(pdMS_TO_TICKS(50));
+    }
+    safe_clear_screen(fbs[0], 0x0000);
+    esp_cache_msync((void *)fbs[0], BUFFER_SIZE, ESP_CACHE_MSYNC_FLAG_DIR_C2M);
+    xSemaphoreTake(vsync_sem, portMAX_DELAY);
+    lcd.lcd_draw_bitmap(0, 0, LCD_H_RES, LCD_V_RES, (uint8_t *)fbs[0]);
+    vTaskDelay(pdMS_TO_TICKS(500));
+    BRIGHTNESS = load_brightness_from_NVS(); // Wczytanie starej jasności
+    set_backlight_brightness(BRIGHTNESS);
+
+    xTaskCreate(vTaskAutoPhotoTimer, "vTaskAutoPhoto", 2048, NULL, 2, NULL);
+    printf("[LOG] Podsystem RTC: Zadanie auto-foto 5-minutowe zarejestrowane.\n");
+
     // 1. Rejestracja zadania wygaszania dwukropka (Priorytet 5)
     xTaskCreate(vTaskDisableColon, "TaskDisableColon", 4096, NULL, 5, &hTaskDisableColon);
 
@@ -249,6 +363,9 @@ void init_RTC_subsystem(void)
     xTaskCreate(vTaskMenuEngine, "vTaskMenuEngine", 4096, NULL, 4, &hTaskMenuEngine);
 
     printf("[LOG] Podsystem RTC: Zadania mrugania i dotyku zostały pomyślnie zarejestrowane.\n");
+    xTaskCreate(vTaskFourHourIncrementer, "vTask4hInc", 2048, NULL, 2, NULL);
+
+    printf("[LOG] Podsystem RTC: Licznik 4h został zarejestrowany.\n");
 }
 
 //=====================================================================================================
@@ -1451,14 +1568,388 @@ uint8_t get_max_days_in_month(int year, uint8_t month)
 //=====================================================================================================
 //=====================================================================================================
 //=====================================================================================================
+void vTaskFourHourIncrementer(void *pvParameters)
+{
+    // Dla testu: 1 minuta (FreeRTOS sam przeliczy to na ticki zależnie od Hz systemu)
+    const TickType_t xIncrementInterval = pdMS_TO_TICKS(4 * 60 * 60 * 1000);
+
+    // Zmienna MUSI być zainicjalizowana aktualnym czasem przed pętlą
+    TickType_t xLastWakeTime = xTaskGetTickCount();
+
+    printf("[SYSTEM] Zadanie inkrementacji co 4 godziny wystartowało.\n");
+
+    while (1)
+    {
+        // Pierwszy argument przekazujemy przez wskaźnik – FreeRTOS sam go zaktualizuje o wartość xIncrementInterval
+        vTaskDelayUntil(&xLastWakeTime, xIncrementInterval);
+
+        // Sekcja inkrementacji zmiennej
+        g_my_4h_counter = g_my_4h_counter + 1;
+
+        // Log do konsoli ESP
+        ESP_LOGI("TIMER_TASK", "Minęły 4h. Licznik globalny: %lu", g_my_4h_counter);
+    }
+}
+//=====================================================================================================
+//=====================================================================================================
+//=====================================================================================================
+
+void init_spiffs_storage(void)
+{
+    printf("[SPIFFS] Inicjalizacja i montowanie partycji 'storage'...\n");
+
+    esp_vfs_spiffs_conf_t conf = {
+        .base_path = "/spiffs",        // Ścieżka dostępu w kodzie: /spiffs/
+        .partition_label = "storage",  // Musi pasować do partitions.csv
+        .max_files = 5,                // Maksymalna liczba otwartych plików
+        .format_if_mount_failed = true // Sformatuje przy pierwszym starcie
+    };
+
+    // Rejestracja dysku w wirtualnym systemie plików
+    esp_err_t ret = esp_vfs_spiffs_register(&conf);
+
+    if (ret != ESP_OK)
+    {
+        if (ret == ESP_FAIL)
+        {
+            printf("[SPIFFS_ERROR] Nie udalo sie zamontowac ani sformatowac systemu plikow!\n");
+        }
+        else if (ret == ESP_ERR_NOT_FOUND)
+        {
+            printf("[SPIFFS_ERROR] Nie znaleziono partycji o etykiecie 'storage'!\n");
+        }
+        else
+        {
+            printf("[SPIFFS_ERROR] Blad inicjalizacji SPIFFS (%s)\n", esp_err_to_name(ret));
+        }
+        return;
+    }
+
+    // Pobranie informacji o wielkości dysku
+    size_t total = 0, used = 0;
+    ret = esp_spiffs_info(conf.partition_label, &total, &used);
+    if (ret == ESP_OK)
+    {
+        printf("[SPIFFS_SUCCESS] Partycja zamontowana! Rozmiar: %d KB, Uzyto: %d KB\n", total / 1024, used / 1024);
+
+        // TWARDE I JAWNE SPRAWDZENIE TWOICH ZDJĘĆ Z FOLDERU FOTOS
+        FILE *f1 = fopen("/spiffs/FOTO1.bmp", "r");
+        FILE *f2 = fopen("/spiffs/FOTO2.bmp", "r");
+
+        if (f1 != NULL)
+        {
+            printf("[SPIFFS_TEST] SUKCES: Wykryto plik -> /spiffs/FOTO1.bmp\n");
+            fclose(f1);
+        }
+        else
+        {
+            printf("[SPIFFS_TEST] BLAD: Brak pliku FOTO1.bmp na partycji Flash!\n");
+        }
+
+        if (f2 != NULL)
+        {
+            printf("[SPIFFS_TEST] SUKCES: Wykryto plik -> /spiffs/FOTO2.bmp\n");
+            fclose(f2);
+        }
+        else
+        {
+            printf("[SPIFFS_TEST] BLAD: Brak pliku FOTO2.bmp na partycji Flash!\n");
+        }
+    }
+}
 
 //=====================================================================================================
 //=====================================================================================================
 //=====================================================================================================
 
+// void init_spiffs_storage(void)
+// {
+//     printf("[SPIFFS] Inicjalizacja i montowanie partycji 'storage'...\n");
+
+//     esp_vfs_spiffs_conf_t conf = {
+//         .base_path = "/spiffs",         // Wszystkie pliki będą pod ścieżką /spiffs/
+//         .partition_label = "storage",   // Ta etykieta MUSI pasować do partitions.csv
+//         .max_files = 5,                 // Ile plików można otworzyć naraz
+//         .format_if_mount_failed = true  // Automatycznie sformatuje partycję przy pierwszym starcie
+//     };
+
+//     // Rejestracja dysku w wirtualnym systemie plików ESP-IDF
+//     esp_err_t ret = esp_vfs_spiffs_register(&conf);
+
+//     if (ret != ESP_OK) {
+//         if (ret == ESP_FAIL) {
+//             printf("[SPIFFS_ERROR] Nie udało się zamontować ani sformatować systemu plików!\n");
+//         } else if (ret == ESP_ERR_NOT_FOUND) {
+//             printf("[SPIFFS_ERROR] Nie znaleziono partycji o nazwie 'storage'!\n");
+//         } else {
+//             printf("[SPIFFS_ERROR] Błąd inicjalizacji SPIFFS (%s)\n", esp_err_to_name(ret));
+//         }
+//         return;
+//     }
+
+//     // Pobranie informacji o wolnej przestrzeni (dla pewności w logach)
+//     size_t total = 0, used = 0;
+//     ret = esp_spiffs_info(conf.partition_label, &total, &used);
+//     if (ret == ESP_OK) {
+//         printf("[SPIFFS_SUCCESS] Partycja zamontowana! Rozmiar: %d KB, Użyto: %d KB\n", total / 1024, used / 1024);
+//     }
+// }
 //=====================================================================================================
 //=====================================================================================================
 //=====================================================================================================
+void vTaskAutoPhotoTimer(void *pvParameters)
+{
+    printf("[SYSTEM] Zadanie auto-foto co 5 minut wystartovalo.\n");
+    while (1)
+    {
+        vTaskDelay(pdMS_TO_TICKS(6 * 1000));
+        // vTaskDelay(pdMS_TO_TICKS(5 * 60 * 1000));
+        g_trigger_auto_photo = true;
+        printf("[TIMER] Minelo 5 minut! Wyzwalam pokaz zdjecia.\n");
+    }
+}
+//=====================================================================================================
+//=====================================================================================================
+//=====================================================================================================
+// void wyswietl_jpg_ze_spiffs(const char *sciezka_pliku)
+// {
+//     printf("[JPEG] PSRAM start: %s\n", sciezka_pliku);
+//     FILE *f = fopen(sciezka_pliku, "rb");
+//     if (f == NULL)
+//     {
+//         printf("[JPEG_ERROR] Brak pliku %s\n", sciezka_pliku);
+//         return;
+//     }
+//     fseek(f, 0, SEEK_END);
+//     size_t rozmiar_jpg = ftell(f);
+//     fseek(f, 0, SEEK_SET);
+
+//     uint8_t *bufor_jpg = (uint8_t *)heap_caps_malloc(rozmiar_jpg, MALLOC_CAP_SPIRAM);
+//     if (bufor_jpg == NULL)
+//     {
+//         fclose(f);
+//         return;
+//     }
+//     fread(bufor_jpg, 1, rozmiar_jpg, f);
+//     fclose(f);
+//     esp_cache_msync((void *)bufor_jpg, rozmiar_jpg, ESP_CACHE_MSYNC_FLAG_DIR_C2M);
+//     size_t rozmiar_rgb888 = 1280 * 800 * 3;
+//     uint8_t *bufor_rgb888 = (uint8_t *)heap_caps_malloc(rozmiar_rgb888, MALLOC_CAP_SPIRAM);
+//     if (bufor_rgb888 == NULL)
+//     {
+//         heap_caps_free(bufor_jpg);
+//         return;
+//     }
+//     esp_jpeg_image_cfg_t jpeg_cfg = {
+//         .indata = bufor_jpg,
+//         .indata_size = (uint32_t)rozmiar_jpg,
+//         .outbuf = bufor_rgb888,
+//         .outbuf_size = (uint32_t)rozmiar_rgb888,
+//         .out_format = JPEG_IMAGE_FORMAT_RGB888,
+//         .out_scale = JPEG_IMAGE_SCALE_0,
+//         .flags = {.swap_color_bytes = 0}};
+//     esp_jpeg_image_output_t outimg;
+//     esp_err_t res = esp_jpeg_decode(&jpeg_cfg, &outimg);
+//     heap_caps_free(bufor_jpg);
+//     if (res == ESP_OK)
+//     {
+//         esp_cache_msync((void *)bufor_rgb888, rozmiar_rgb888, ESP_CACHE_MSYNC_FLAG_DIR_M2C | ESP_CACHE_MSYNC_FLAG_INVALIDATE);
+//     }
+//     uint16_t *bufor_ekranu = (uint16_t *)fbs[0];
+//     if (res == ESP_OK)
+//     {
+//         for (int i = 0; i < 1280 * 800; i++)
+//         {
+//             uint8_t r = bufor_rgb888[i * 3 + 0];
+//             uint8_t g = bufor_rgb888[i * 3 + 1];
+//             uint8_t b = bufor_rgb888[i * 3 + 2];
+//             bufor_ekranu[i] = ((r & 0xF8) << 8) | ((g & 0xFC) << 3) | (b >> 3);
+//         }
+//     }
+//     heap_caps_free(bufor_rgb888);
+//     if (res == ESP_OK)
+//     {
+//         esp_cache_msync((void *)bufor_ekranu, BUFFER_SIZE, ESP_CACHE_MSYNC_FLAG_DIR_C2M | ESP_CACHE_MSYNC_FLAG_INVALIDATE);
+//         xSemaphoreTake(vsync_sem, portMAX_DELAY);
+//         lcd.lcd_draw_bitmap(0, 0, LCD_H_RES, LCD_V_RES, (uint8_t *)bufor_ekranu);
+//         printf("[JPEG] Obraz wyrenderowany stabilnie i wyslany przez DMA na LCD!\n");
+//     }
+// }
+
+//=====================================================================================================
+//=====================================================================================================
+//=====================================================================================================
+// void wyswietl_jpg_ze_spiffs(const char *sciezka_pliku)
+// {
+//     printf("[JPEG] PSRAM start: %s\n", sciezka_pliku);
+//     FILE *f = fopen(sciezka_pliku, "rb");
+//     if (f == NULL)
+//     {
+//         printf("[JPEG_ERROR] Brak pliku %s\n", sciezka_pliku);
+//         return;
+//     }
+//     fseek(f, 0, SEEK_END);
+//     size_t rozmiar_jpg = ftell(f);
+//     fseek(f, 0, SEEK_SET);
+
+//     uint8_t *bufor_jpg = g_statyczny_bufor_jpg;
+//     fread(bufor_jpg, 1, rozmiar_jpg, f);
+//     fclose(f);
+
+//     periph_module_reset(PERIPH_JPEG_MODULE);
+//     vTaskDelay(pdMS_TO_TICKS(10)); // Opóźnienie na stabilizację DMA
+
+//     // Unieważnienie Cache przed dekodowaniem
+//     size_t rozmiar_rgb_safe_sync = (ROZMIAR_RGB888 + 63) & ~63;
+//     esp_cache_msync((void *)bufor_rgb888, rozmiar_rgb_safe_sync, ESP_CACHE_MSYNC_FLAG_DIR_M2C | ESP_CACHE_MSYNC_FLAG_INVALIDATE);
+
+//     esp_err_t res = esp_jpeg_decode(&jpeg_cfg, &outimg);
+
+//     uint8_t *bufor_rgb888 = g_statyczny_bufor_rgb888;
+
+//     esp_jpeg_image_cfg_t jpeg_cfg = {
+//         .indata = bufor_jpg,
+//         .indata_size = (uint32_t)rozmiar_jpg,
+//         .outbuf = bufor_rgb888,
+//         .outbuf_size = (uint32_t)ROZMIAR_RGB888,
+//         .out_format = JPEG_IMAGE_FORMAT_RGB888,
+//         .out_scale = JPEG_IMAGE_SCALE_0,
+//         .flags = {.swap_color_bytes = 0}};
+//     esp_jpeg_image_output_t outimg;
+//     res = esp_jpeg_decode(&jpeg_cfg, &outimg);
+
+//     if (res == ESP_OK)
+//     {
+//         esp_cache_msync((void *)bufor_rgb888, ROZMIAR_RGB888, ESP_CACHE_MSYNC_FLAG_DIR_M2C | ESP_CACHE_MSYNC_FLAG_INVALIDATE);
+//     }
+//     uint16_t *bufor_ekranu = (uint16_t *)fbs[0];
+//     if (res == ESP_OK)
+//     {
+//         for (int i = 0; i < 1280 * 800; i++)
+//         {
+//             uint8_t r = bufor_rgb888[i * 3 + 0];
+//             uint8_t g = bufor_rgb888[i * 3 + 1];
+//             uint8_t b = bufor_rgb888[i * 3 + 2];
+//             bufor_ekranu[i] = ((r & 0xF8) << 8) | ((g & 0xFC) << 3) | (b >> 3);
+//         }
+//     }
+//     // esp_err_t res = esp_jpeg_decode(&jpeg_cfg, &outimg);
+
+//     if (res == ESP_OK)
+//     {
+//         // 1. Synchronizujemy zdekodowany bufor surowych pikseli RGB888 z pamieci Cache do PSRAM
+//         size_t rozmiar_rgb_safe_sync = (ROZMIAR_RGB888 + 63) & ~63;
+//         esp_cache_msync((void *)bufor_rgb888, rozmiar_rgb_safe_sync, ESP_CACHE_MSYNC_FLAG_DIR_M2C | ESP_CACHE_MSYNC_FLAG_INVALIDATE);
+//     }
+
+//     if (res == ESP_OK)
+//     {
+//         // 2. KLUCZOWY KROK: Przepakowanie pikseli 24-bit RGB888 do 16-bit RGB565 bufora ekranu
+//         for (int i = 0; i < 1280 * 800; i++)
+//         {
+//             uint8_t r = bufor_rgb888[i * 3 + 0];
+//             uint8_t g = bufor_rgb888[i * 3 + 1];
+//             uint8_t b = bufor_rgb888[i * 3 + 2];
+//             bufor_ekranu[i] = ((r & 0xF8) << 8) | ((g & 0xFC) << 3) | (b >> 3);
+//         }
+
+//         // 3. Wypchniecie nowo zbudowanego obrazu RGB565 z pamieci Cache procesora do fizycznego PSRAM ekranu
+//         esp_cache_msync((void *)bufor_ekranu, BUFFER_SIZE, ESP_CACHE_MSYNC_FLAG_DIR_C2M | ESP_CACHE_MSYNC_FLAG_INVALIDATE);
+
+//         // 4. Czekamy na bezpieczny moment VSYNC i rzucamy DMA na LCD
+//         xSemaphoreTake(vsync_sem, portMAX_DELAY);
+//         lcd.lcd_draw_bitmap(0, 0, LCD_H_RES, LCD_V_RES, (uint8_t *)bufor_ekranu);
+//         printf("[JPEG] Obraz wyrenderowany stabilnie i wyslany przez DMA na LCD!\n");
+//     }
+// }
+//*************************************************** */
+
+//=====================================================================================================
+// void wyswietl_jpg_ze_spiffs(const char *sciezka_pliku)
+// {
+//     printf("[JPEG] PSRAM start: %s\n", sciezka_pliku);
+//     FILE *f = fopen(sciezka_pliku, "rb");
+//     if (f == NULL)
+//     {
+//         printf("[JPEG_ERROR] Brak pliku %s\n", sciezka_pliku);
+//         return;
+//     }
+//     fseek(f, 0, SEEK_END);
+//     size_t rozmiar_jpg = ftell(f);
+//     fseek(f, 0, SEEK_SET);
+//     uint8_t *bufor_jpg = g_statyczny_bufor_jpg;
+//     fread(bufor_jpg, 1, rozmiar_jpg, f);
+//     fclose(f);
+//     periph_module_reset(PERIPH_JPEG_MODULE);
+//     vTaskDelay(pdMS_TO_TICKS(10));
+//     size_t rozmiar_jpg_aligned = (rozmiar_jpg + 63) & ~63;
+//     esp_cache_msync((void *)bufor_jpg, rozmiar_jpg_aligned, ESP_CACHE_MSYNC_FLAG_DIR_C2M);
+//     uint8_t *bufor_rgb888 = g_statyczny_bufor_rgb888;
+//     esp_jpeg_image_cfg_t jpeg_cfg = {0};
+//     jpeg_cfg.indata = bufor_jpg;
+//     jpeg_cfg.indata_size = (uint32_t)rozmiar_jpg;
+//     jpeg_cfg.outbuf = bufor_rgb888;
+//     jpeg_cfg.outbuf_size = (uint32_t)ROZMIAR_RGB888;
+//     jpeg_cfg.out_format = JPEG_IMAGE_FORMAT_RGB888;
+//     jpeg_cfg.out_scale = JPEG_IMAGE_SCALE_0;
+//     esp_jpeg_image_output_t outimg;
+//     esp_err_t res = esp_jpeg_decode(&jpeg_cfg, &outimg);
+//     if (res == ESP_OK)
+//     {
+//         size_t rozmiar_rgb_safe_sync = (ROZMIAR_RGB888 + 63) & ~63;
+//         esp_cache_msync((void *)bufor_rgb888, rozmiar_rgb_safe_sync, ESP_CACHE_MSYNC_FLAG_DIR_M2C | ESP_CACHE_MSYNC_FLAG_INVALIDATE);
+//     }
+//     uint16_t *bufor_ekranu = (uint16_t *)fbs[0];
+//     if (res == ESP_OK)
+//     {
+//         for (int i = 0; i < 1280 * 800; i++)
+//         {
+//             uint8_t r = bufor_rgb888[i * 3 + 0];
+//             uint8_t g = bufor_rgb888[i * 3 + 1];
+//             uint8_t b = bufor_rgb888[i * 3 + 2];
+//             bufor_ekranu[i] = ((r & 0xF8) << 8) | ((g & 0xFC) << 3) | (b >> 3);
+//         }
+//     }
+//     if (res == ESP_OK)
+//     {
+//         esp_cache_msync((void *)bufor_ekranu, BUFFER_SIZE, ESP_CACHE_MSYNC_FLAG_DIR_C2M | ESP_CACHE_MSYNC_FLAG_INVALIDATE);
+//         xSemaphoreTake(vsync_sem, portMAX_DELAY);
+//         lcd.lcd_draw_bitmap(0, 0, LCD_H_RES, LCD_V_RES, (uint8_t *)bufor_ekranu);
+//         printf("[JPEG] Obraz udanie wyslany przez DMA na LCD!\n");
+//     }
+// }
+//=====================================================================================================
+//=====================================================================================================
+//=====================================================================================================
+void wyswietl_bmp_ze_spiffs(const char *sciezka_pliku)
+{
+    if (g_statyczny_bufor_bmp == NULL)
+        return;
+    printf("[BMP] Odczyt pliku: %s\n", sciezka_pliku);
+    FILE *f = fopen(sciezka_pliku, "rb");
+    if (f == NULL)
+        return;
+    fread(g_statyczny_bufor_bmp, 1, ROZMIAR_MAX_BMP, f);
+    fclose(f);
+    uint16_t *bufor_ekranu = (uint16_t *)fbs[0];
+
+    int idx = 54;
+
+    for (int i = 0; i < 1280 * 800; i++)
+    {
+        uint8_t b = g_statyczny_bufor_bmp[idx + 0];
+        uint8_t g = g_statyczny_bufor_bmp[idx + 1];
+        uint8_t r = g_statyczny_bufor_bmp[idx + 2];
+        idx += 3;
+
+        bufor_ekranu[i] = ((r & 0xF8) << 8) | ((g & 0xFC) << 3) | (b >> 3);
+    }
+
+    esp_cache_msync((void *)bufor_ekranu, BUFFER_SIZE, ESP_CACHE_MSYNC_FLAG_DIR_C2M);
+    xSemaphoreTake(vsync_sem, portMAX_DELAY);
+    lcd.lcd_draw_bitmap(0, 0, LCD_H_RES, LCD_V_RES, (uint8_t *)bufor_ekranu);
+    printf("[BMP_SUCCESS] Obraz bezkompresyjny wyslany na LCD!\n");
+}
 
 //=====================================================================================================
 //=====================================================================================================

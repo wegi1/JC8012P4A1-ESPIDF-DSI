@@ -18,4 +18,7 @@ idf_component_register(
         esp_netif 
         nvs_flash 
         lwip
+        spiffs
 )
+
+#spiffs_create_partition_image(storage "${CMAKE_CURRENT_LIST_DIR}/../FOTOS" FLASH_IN_PROJECT)

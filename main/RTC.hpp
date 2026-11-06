@@ -31,3 +31,8 @@ void init_NVS_system(void);
 void save_brightness_to_NVS(uint8_t brightness_val);
 uint8_t load_brightness_from_NVS(void);
 uint8_t get_max_days_in_month(int year, uint8_t month);
+void vTaskFourHourIncrementer(void *pvParameters);
+void init_spiffs_storage(void);
+// void wyswietl_jpg_ze_spiffs(const char *sciezka_pliku);
+void vTaskAutoPhotoTimer(void *pvParameters);
+void wyswietl_bmp_ze_spiffs(const char *sciezka_pliku);
