@@ -60,7 +60,6 @@ gsl3680_touch touch(TP_I2C_SDA, TP_I2C_SCL, TP_RST, TP_INT);
 // DWA SPRZĘTOWE BUFORY DLA BEZKOPIOŁOWEGO PAGE FLIPPINGU
 uint16_t *fbs[1] = {NULL};
 
-volatile int back_buffer_idx = 1;
 SemaphoreHandle_t vsync_sem = NULL;
 //============================================================================================================
 //============================================================================================================
@@ -195,43 +194,7 @@ extern "C" void app_main(void)
     sync_internal_rtc_with_rx8025t(); // <<< WYWOŁUJEMY RAZ PO RESECIE
 
     init_RTC_subsystem();
-    // =========================================================================
-    // TEST DETEKCJI I ODCZYTU ZEGARA RTC RX8025T
-    // =========================================================================
 
-    // Szybki ping adresu I2C (0x32) w celu weryfikacji obecności układu na magistrali
-    i2c_cmd_handle_t ping_cmd = i2c_cmd_link_create();
-    i2c_master_start(ping_cmd);
-    i2c_master_write_byte(ping_cmd, (0x32 << 1) | I2C_MASTER_WRITE, true);
-    i2c_master_stop(ping_cmd);
-
-    esp_err_t ping_err = i2c_master_cmd_begin(I2C_NUM_0, ping_cmd, pdMS_TO_TICKS(100));
-    i2c_cmd_link_delete(ping_cmd);
-
-    if (ping_err == ESP_OK)
-    {
-        ESP_LOGI("RTC_TEST", "SUKCES! Wykryto urzadzenie RX8025T pod adresem I2C 0x32.");
-
-        // Jeśli układ żyje, spróbujmy odczytać z niego czas na starcie
-        rx8025t_time_t test_time;
-        if (rx8025t_get_time(&test_time) == ESP_OK)
-        {
-            ESP_LOGI("RTC_TEST", "Pierwszy odczyt czasu udany: %02d:%02d:%02d, Data: %02d-%02d-%04d",
-                     test_time.hour, test_time.minute, test_time.second,
-                     test_time.day, test_time.month, test_time.year);
-        }
-        else
-        {
-            ESP_LOGE("RTC_TEST", "Blad podczas parsowania rejestrow czasu!");
-        }
-    }
-    else
-    {
-        ESP_LOGE("RTC_TEST", "BLAD! Urzadzenie pod adresem 0x32 nie odpowiada na szynie I2C. Sprawdz zasilanie/polaczenie.");
-    }
-
-    //============================================================================================================
-    //============================================================================================================
     //============================================================================================================
 
     // Pętla główna Double Bufferingu

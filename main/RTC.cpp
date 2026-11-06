@@ -3,7 +3,6 @@
 #include <stdio.h>
 #include <string.h>
 #include <time.h>
-#include <sys/time.h>
 #include <esp_timer.h>
 
 // Naglowki FreeRTOS oraz ESP-IDF
@@ -13,13 +12,10 @@
 #include "esp_cache.h"
 #include "esp_log.h"
 #include "driver/ledc.h"
-#include "esp_private/periph_ctrl.h"
 
 #include "nvs_flash.h"
 #include "nvs.h"
 #include "esp_spiffs.h"
-
-#include "esp_cache.h"
 
 // Naglowki Twojego podsystemu graficznego i sprzetu
 #include "renderer.hpp"
@@ -77,10 +73,8 @@ volatile int PHOTO_NR = 0;    // Zmienna globalna do przechowywania numeru aktua
 static int old_seconds = 111; // Zmienna do filtrowania zbocza sekundy (Edge Detection)
 
 // NOWOŚĆ: Te wskaźniki zostaną idealnie wyrównane matematycznie i podane do dekodera
-uint8_t *g_statyczny_bufor_rgb888 = NULL;
 uint8_t *g_statyczny_bufor_bmp = NULL;
 const size_t ROZMIAR_MAX_BMP = 1280 * 800 * 3 + 64;
-const size_t ROZMIAR_RGB888 = 1280 * 800 * 3 + 64; // Zapas 64B dla msync
 
 //=====================================================================================================
 //=====================================================================================================
@@ -315,23 +309,9 @@ void init_RTC_subsystem(void)
 
     // Drukowanie adresów fizycznych buforów w formacie HEX
     printf("[HEX_DIAG] Adres statycznego bufora BMP:    %p\n", (void *)g_statyczny_bufor_bmp);
-    printf("[HEX_DIAG] Adres statycznego bufora RGB888: %p\n", (void *)g_statyczny_bufor_rgb888);
     printf("[HEX_DIAG] Adres sprzętowego bufora ekranu fbs[0]: %p\n", (void *)fbs[0]);
 
-    // POWRÓT DO STAREJ, DZIAŁAJĄCEJ METODY 1:1 (Bez aligned!)
-    // g_statyczny_bufor_jpg = (uint8_t *)heap_caps_malloc(ROZMIAR_MAX_JPG, MALLOC_CAP_SPIRAM);
-    // g_statyczny_bufor_rgb888 = (uint8_t *)heap_caps_malloc(ROZMIAR_RGB888, MALLOC_CAP_SPIRAM);
-
-    if (g_statyczny_bufor_bmp == NULL || g_statyczny_bufor_rgb888 == NULL)
-    {
-        printf("[KRK] BLAD KRYTYCZNY: Nie udalo sie zarezerwowac pamieci startowej w PSRAM!\n");
-    }
-    else
-    {
-        printf("[SYSTEM_SUCCESS] Zarezerwowano 4.07 MB w PSRAM na stale dla podsystemu BMP.\n");
-    }
-
-    // TESTOWE WYŚWIETLENIE PIERWSZEGO ZDJĘCIA (Zaraz po starcie na chwilę pokaże FOTO1.bmp!)
+     // TESTOWE WYŚWIETLENIE PIERWSZEGO ZDJĘCIA (Zaraz po starcie na chwilę pokaże FOTO1.bmp!)
     set_backlight_brightness(100);
     wyswietl_bmp_ze_spiffs("/spiffs/FOTO1.bmp");
     vTaskDelay(pdMS_TO_TICKS(3000)); // Pokazuj zdjęcie przez 3 sekundy, zanim wystartuje główny zegar!
@@ -1290,35 +1270,6 @@ void reconfig_pin_bl_to_pwm(void)
 
     printf("[PWM] Pin 23 został pomyślnie REKONFIGUROWANY na tryb PWM (10-bit, 5kHz).\n");
 }
-
-// void rekonfiguruj_pin_bl_na_pwm(void)
-// {
-//     // 1. Konfiguracja timera LEDC
-//     ledc_timer_config_t ledc_timer = {
-//         .speed_mode = BACKLIGHT_LEDC_MODE,
-//         .duty_resolution = BACKLIGHT_LEDC_DUTY_RES,
-//         .timer_num = BACKLIGHT_LEDC_TIMER,
-//         .freq_hz = BACKLIGHT_LEDC_FREQUENCY,
-//         .clk_cfg = LEDC_AUTO_CLK};
-//     ledc_timer_config(&ledc_timer);
-
-//     // 2. Konfiguracja kanału LEDC i przejęcie pinu 23
-//     ledc_channel_config_t ledc_channel =
-//         {
-//             .gpio_num = BACKLIGHT_GPIO,
-//             .speed_mode = BACKLIGHT_LEDC_MODE,
-//             .channel = BACKLIGHT_LEDC_CHANNEL,
-//             .intr_type = LEDC_INTR_DISABLE,
-//             .timer_sel = BACKLIGHT_LEDC_TIMER,
-//             .duty = 1023, // Na start ustawiamy 100% jasności (10-bit max)
-//             .hpoint = 0,
-//             .sleep_mode = (ledc_sleep_mode_t)0 // <<< Twarde wyzerowanie pola uśpienia
-//     };
-//     ledc_channel_config(&ledc_channel);
-
-//     printf("[PWM] Pin 23 został pomyślnie REKONFIGUROWANY na tryb PWM (10-bit, 5kHz).\n");
-// }
-
 //=====================================================================================================
 //=====================================================================================================
 //=====================================================================================================
@@ -1662,38 +1613,6 @@ void init_spiffs_storage(void)
 //=====================================================================================================
 //=====================================================================================================
 
-// void init_spiffs_storage(void)
-// {
-//     printf("[SPIFFS] Inicjalizacja i montowanie partycji 'storage'...\n");
-
-//     esp_vfs_spiffs_conf_t conf = {
-//         .base_path = "/spiffs",         // Wszystkie pliki będą pod ścieżką /spiffs/
-//         .partition_label = "storage",   // Ta etykieta MUSI pasować do partitions.csv
-//         .max_files = 5,                 // Ile plików można otworzyć naraz
-//         .format_if_mount_failed = true  // Automatycznie sformatuje partycję przy pierwszym starcie
-//     };
-
-//     // Rejestracja dysku w wirtualnym systemie plików ESP-IDF
-//     esp_err_t ret = esp_vfs_spiffs_register(&conf);
-
-//     if (ret != ESP_OK) {
-//         if (ret == ESP_FAIL) {
-//             printf("[SPIFFS_ERROR] Nie udało się zamontować ani sformatować systemu plików!\n");
-//         } else if (ret == ESP_ERR_NOT_FOUND) {
-//             printf("[SPIFFS_ERROR] Nie znaleziono partycji o nazwie 'storage'!\n");
-//         } else {
-//             printf("[SPIFFS_ERROR] Błąd inicjalizacji SPIFFS (%s)\n", esp_err_to_name(ret));
-//         }
-//         return;
-//     }
-
-//     // Pobranie informacji o wolnej przestrzeni (dla pewności w logach)
-//     size_t total = 0, used = 0;
-//     ret = esp_spiffs_info(conf.partition_label, &total, &used);
-//     if (ret == ESP_OK) {
-//         printf("[SPIFFS_SUCCESS] Partycja zamontowana! Rozmiar: %d KB, Użyto: %d KB\n", total / 1024, used / 1024);
-//     }
-// }
 //=====================================================================================================
 //=====================================================================================================
 //=====================================================================================================
@@ -1711,213 +1630,7 @@ void vTaskAutoPhotoTimer(void *pvParameters)
 //=====================================================================================================
 //=====================================================================================================
 //=====================================================================================================
-// void wyswietl_jpg_ze_spiffs(const char *sciezka_pliku)
-// {
-//     printf("[JPEG] PSRAM start: %s\n", sciezka_pliku);
-//     FILE *f = fopen(sciezka_pliku, "rb");
-//     if (f == NULL)
-//     {
-//         printf("[JPEG_ERROR] Brak pliku %s\n", sciezka_pliku);
-//         return;
-//     }
-//     fseek(f, 0, SEEK_END);
-//     size_t rozmiar_jpg = ftell(f);
-//     fseek(f, 0, SEEK_SET);
 
-//     uint8_t *bufor_jpg = (uint8_t *)heap_caps_malloc(rozmiar_jpg, MALLOC_CAP_SPIRAM);
-//     if (bufor_jpg == NULL)
-//     {
-//         fclose(f);
-//         return;
-//     }
-//     fread(bufor_jpg, 1, rozmiar_jpg, f);
-//     fclose(f);
-//     esp_cache_msync((void *)bufor_jpg, rozmiar_jpg, ESP_CACHE_MSYNC_FLAG_DIR_C2M);
-//     size_t rozmiar_rgb888 = 1280 * 800 * 3;
-//     uint8_t *bufor_rgb888 = (uint8_t *)heap_caps_malloc(rozmiar_rgb888, MALLOC_CAP_SPIRAM);
-//     if (bufor_rgb888 == NULL)
-//     {
-//         heap_caps_free(bufor_jpg);
-//         return;
-//     }
-//     esp_jpeg_image_cfg_t jpeg_cfg = {
-//         .indata = bufor_jpg,
-//         .indata_size = (uint32_t)rozmiar_jpg,
-//         .outbuf = bufor_rgb888,
-//         .outbuf_size = (uint32_t)rozmiar_rgb888,
-//         .out_format = JPEG_IMAGE_FORMAT_RGB888,
-//         .out_scale = JPEG_IMAGE_SCALE_0,
-//         .flags = {.swap_color_bytes = 0}};
-//     esp_jpeg_image_output_t outimg;
-//     esp_err_t res = esp_jpeg_decode(&jpeg_cfg, &outimg);
-//     heap_caps_free(bufor_jpg);
-//     if (res == ESP_OK)
-//     {
-//         esp_cache_msync((void *)bufor_rgb888, rozmiar_rgb888, ESP_CACHE_MSYNC_FLAG_DIR_M2C | ESP_CACHE_MSYNC_FLAG_INVALIDATE);
-//     }
-//     uint16_t *bufor_ekranu = (uint16_t *)fbs[0];
-//     if (res == ESP_OK)
-//     {
-//         for (int i = 0; i < 1280 * 800; i++)
-//         {
-//             uint8_t r = bufor_rgb888[i * 3 + 0];
-//             uint8_t g = bufor_rgb888[i * 3 + 1];
-//             uint8_t b = bufor_rgb888[i * 3 + 2];
-//             bufor_ekranu[i] = ((r & 0xF8) << 8) | ((g & 0xFC) << 3) | (b >> 3);
-//         }
-//     }
-//     heap_caps_free(bufor_rgb888);
-//     if (res == ESP_OK)
-//     {
-//         esp_cache_msync((void *)bufor_ekranu, BUFFER_SIZE, ESP_CACHE_MSYNC_FLAG_DIR_C2M | ESP_CACHE_MSYNC_FLAG_INVALIDATE);
-//         xSemaphoreTake(vsync_sem, portMAX_DELAY);
-//         lcd.lcd_draw_bitmap(0, 0, LCD_H_RES, LCD_V_RES, (uint8_t *)bufor_ekranu);
-//         printf("[JPEG] Obraz wyrenderowany stabilnie i wyslany przez DMA na LCD!\n");
-//     }
-// }
-
-//=====================================================================================================
-//=====================================================================================================
-//=====================================================================================================
-// void wyswietl_jpg_ze_spiffs(const char *sciezka_pliku)
-// {
-//     printf("[JPEG] PSRAM start: %s\n", sciezka_pliku);
-//     FILE *f = fopen(sciezka_pliku, "rb");
-//     if (f == NULL)
-//     {
-//         printf("[JPEG_ERROR] Brak pliku %s\n", sciezka_pliku);
-//         return;
-//     }
-//     fseek(f, 0, SEEK_END);
-//     size_t rozmiar_jpg = ftell(f);
-//     fseek(f, 0, SEEK_SET);
-
-//     uint8_t *bufor_jpg = g_statyczny_bufor_jpg;
-//     fread(bufor_jpg, 1, rozmiar_jpg, f);
-//     fclose(f);
-
-//     periph_module_reset(PERIPH_JPEG_MODULE);
-//     vTaskDelay(pdMS_TO_TICKS(10)); // Opóźnienie na stabilizację DMA
-
-//     // Unieważnienie Cache przed dekodowaniem
-//     size_t rozmiar_rgb_safe_sync = (ROZMIAR_RGB888 + 63) & ~63;
-//     esp_cache_msync((void *)bufor_rgb888, rozmiar_rgb_safe_sync, ESP_CACHE_MSYNC_FLAG_DIR_M2C | ESP_CACHE_MSYNC_FLAG_INVALIDATE);
-
-//     esp_err_t res = esp_jpeg_decode(&jpeg_cfg, &outimg);
-
-//     uint8_t *bufor_rgb888 = g_statyczny_bufor_rgb888;
-
-//     esp_jpeg_image_cfg_t jpeg_cfg = {
-//         .indata = bufor_jpg,
-//         .indata_size = (uint32_t)rozmiar_jpg,
-//         .outbuf = bufor_rgb888,
-//         .outbuf_size = (uint32_t)ROZMIAR_RGB888,
-//         .out_format = JPEG_IMAGE_FORMAT_RGB888,
-//         .out_scale = JPEG_IMAGE_SCALE_0,
-//         .flags = {.swap_color_bytes = 0}};
-//     esp_jpeg_image_output_t outimg;
-//     res = esp_jpeg_decode(&jpeg_cfg, &outimg);
-
-//     if (res == ESP_OK)
-//     {
-//         esp_cache_msync((void *)bufor_rgb888, ROZMIAR_RGB888, ESP_CACHE_MSYNC_FLAG_DIR_M2C | ESP_CACHE_MSYNC_FLAG_INVALIDATE);
-//     }
-//     uint16_t *bufor_ekranu = (uint16_t *)fbs[0];
-//     if (res == ESP_OK)
-//     {
-//         for (int i = 0; i < 1280 * 800; i++)
-//         {
-//             uint8_t r = bufor_rgb888[i * 3 + 0];
-//             uint8_t g = bufor_rgb888[i * 3 + 1];
-//             uint8_t b = bufor_rgb888[i * 3 + 2];
-//             bufor_ekranu[i] = ((r & 0xF8) << 8) | ((g & 0xFC) << 3) | (b >> 3);
-//         }
-//     }
-//     // esp_err_t res = esp_jpeg_decode(&jpeg_cfg, &outimg);
-
-//     if (res == ESP_OK)
-//     {
-//         // 1. Synchronizujemy zdekodowany bufor surowych pikseli RGB888 z pamieci Cache do PSRAM
-//         size_t rozmiar_rgb_safe_sync = (ROZMIAR_RGB888 + 63) & ~63;
-//         esp_cache_msync((void *)bufor_rgb888, rozmiar_rgb_safe_sync, ESP_CACHE_MSYNC_FLAG_DIR_M2C | ESP_CACHE_MSYNC_FLAG_INVALIDATE);
-//     }
-
-//     if (res == ESP_OK)
-//     {
-//         // 2. KLUCZOWY KROK: Przepakowanie pikseli 24-bit RGB888 do 16-bit RGB565 bufora ekranu
-//         for (int i = 0; i < 1280 * 800; i++)
-//         {
-//             uint8_t r = bufor_rgb888[i * 3 + 0];
-//             uint8_t g = bufor_rgb888[i * 3 + 1];
-//             uint8_t b = bufor_rgb888[i * 3 + 2];
-//             bufor_ekranu[i] = ((r & 0xF8) << 8) | ((g & 0xFC) << 3) | (b >> 3);
-//         }
-
-//         // 3. Wypchniecie nowo zbudowanego obrazu RGB565 z pamieci Cache procesora do fizycznego PSRAM ekranu
-//         esp_cache_msync((void *)bufor_ekranu, BUFFER_SIZE, ESP_CACHE_MSYNC_FLAG_DIR_C2M | ESP_CACHE_MSYNC_FLAG_INVALIDATE);
-
-//         // 4. Czekamy na bezpieczny moment VSYNC i rzucamy DMA na LCD
-//         xSemaphoreTake(vsync_sem, portMAX_DELAY);
-//         lcd.lcd_draw_bitmap(0, 0, LCD_H_RES, LCD_V_RES, (uint8_t *)bufor_ekranu);
-//         printf("[JPEG] Obraz wyrenderowany stabilnie i wyslany przez DMA na LCD!\n");
-//     }
-// }
-//*************************************************** */
-
-//=====================================================================================================
-// void wyswietl_jpg_ze_spiffs(const char *sciezka_pliku)
-// {
-//     printf("[JPEG] PSRAM start: %s\n", sciezka_pliku);
-//     FILE *f = fopen(sciezka_pliku, "rb");
-//     if (f == NULL)
-//     {
-//         printf("[JPEG_ERROR] Brak pliku %s\n", sciezka_pliku);
-//         return;
-//     }
-//     fseek(f, 0, SEEK_END);
-//     size_t rozmiar_jpg = ftell(f);
-//     fseek(f, 0, SEEK_SET);
-//     uint8_t *bufor_jpg = g_statyczny_bufor_jpg;
-//     fread(bufor_jpg, 1, rozmiar_jpg, f);
-//     fclose(f);
-//     periph_module_reset(PERIPH_JPEG_MODULE);
-//     vTaskDelay(pdMS_TO_TICKS(10));
-//     size_t rozmiar_jpg_aligned = (rozmiar_jpg + 63) & ~63;
-//     esp_cache_msync((void *)bufor_jpg, rozmiar_jpg_aligned, ESP_CACHE_MSYNC_FLAG_DIR_C2M);
-//     uint8_t *bufor_rgb888 = g_statyczny_bufor_rgb888;
-//     esp_jpeg_image_cfg_t jpeg_cfg = {0};
-//     jpeg_cfg.indata = bufor_jpg;
-//     jpeg_cfg.indata_size = (uint32_t)rozmiar_jpg;
-//     jpeg_cfg.outbuf = bufor_rgb888;
-//     jpeg_cfg.outbuf_size = (uint32_t)ROZMIAR_RGB888;
-//     jpeg_cfg.out_format = JPEG_IMAGE_FORMAT_RGB888;
-//     jpeg_cfg.out_scale = JPEG_IMAGE_SCALE_0;
-//     esp_jpeg_image_output_t outimg;
-//     esp_err_t res = esp_jpeg_decode(&jpeg_cfg, &outimg);
-//     if (res == ESP_OK)
-//     {
-//         size_t rozmiar_rgb_safe_sync = (ROZMIAR_RGB888 + 63) & ~63;
-//         esp_cache_msync((void *)bufor_rgb888, rozmiar_rgb_safe_sync, ESP_CACHE_MSYNC_FLAG_DIR_M2C | ESP_CACHE_MSYNC_FLAG_INVALIDATE);
-//     }
-//     uint16_t *bufor_ekranu = (uint16_t *)fbs[0];
-//     if (res == ESP_OK)
-//     {
-//         for (int i = 0; i < 1280 * 800; i++)
-//         {
-//             uint8_t r = bufor_rgb888[i * 3 + 0];
-//             uint8_t g = bufor_rgb888[i * 3 + 1];
-//             uint8_t b = bufor_rgb888[i * 3 + 2];
-//             bufor_ekranu[i] = ((r & 0xF8) << 8) | ((g & 0xFC) << 3) | (b >> 3);
-//         }
-//     }
-//     if (res == ESP_OK)
-//     {
-//         esp_cache_msync((void *)bufor_ekranu, BUFFER_SIZE, ESP_CACHE_MSYNC_FLAG_DIR_C2M | ESP_CACHE_MSYNC_FLAG_INVALIDATE);
-//         xSemaphoreTake(vsync_sem, portMAX_DELAY);
-//         lcd.lcd_draw_bitmap(0, 0, LCD_H_RES, LCD_V_RES, (uint8_t *)bufor_ekranu);
-//         printf("[JPEG] Obraz udanie wyslany przez DMA na LCD!\n");
-//     }
-// }
 //=====================================================================================================
 //=====================================================================================================
 //=====================================================================================================
@@ -1933,16 +1646,19 @@ void wyswietl_bmp_ze_spiffs(const char *sciezka_pliku)
     fclose(f);
     uint16_t *bufor_ekranu = (uint16_t *)fbs[0];
 
-    int idx = 54;
-
-    for (int i = 0; i < 1280 * 800; i++)
+    for (int y = 0; y < 1280; y++)
     {
-        uint8_t b = g_statyczny_bufor_bmp[idx + 0];
-        uint8_t g = g_statyczny_bufor_bmp[idx + 1];
-        uint8_t r = g_statyczny_bufor_bmp[idx + 2];
-        idx += 3;
-
-        bufor_ekranu[i] = ((r & 0xF8) << 8) | ((g & 0xFC) << 3) | (b >> 3);
+        int bmp_y = 1279 - y;
+        int idx = 54 + (bmp_y * 800 * 3);
+        int screen_idx = y * 800;
+        for (int x = 0; x < 800; x++)
+        {
+            uint8_t b = g_statyczny_bufor_bmp[idx + 0];
+            uint8_t g = g_statyczny_bufor_bmp[idx + 1];
+            uint8_t r = g_statyczny_bufor_bmp[idx + 2];
+            idx += 3;
+            bufor_ekranu[screen_idx + x] = ((r & 0xF8) << 8) | ((g & 0xFC) << 3) | (b >> 3);
+        }
     }
 
     esp_cache_msync((void *)bufor_ekranu, BUFFER_SIZE, ESP_CACHE_MSYNC_FLAG_DIR_C2M);
@@ -1950,7 +1666,6 @@ void wyswietl_bmp_ze_spiffs(const char *sciezka_pliku)
     lcd.lcd_draw_bitmap(0, 0, LCD_H_RES, LCD_V_RES, (uint8_t *)bufor_ekranu);
     printf("[BMP_SUCCESS] Obraz bezkompresyjny wyslany na LCD!\n");
 }
-
 //=====================================================================================================
 //=====================================================================================================
 //=====================================================================================================
