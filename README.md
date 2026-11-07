@@ -11,7 +11,7 @@ This repository provides a verified, native **ESP-IDF v5.5.3** framework and dis
 
 ### 🛠 Architecture & Performance
 - **Environment:** Pure ESP-IDF v5.5.3 with `-O3` compiler optimizations and Docker devcontainer support.
-- **Graphics Strategy:** Implements bare-metal scanlines via direct register access (`0x50120040`) and hardware page flipping in PSRAM for smooth 60 FPS rendering without heavy UI frameworks.
+- **Graphics Strategy:** Smooth 60 FPS rendering without heavy UI frameworks.
 - **Roadmap:** Upcoming integration of GSL3680 touch panel, vector fonts (`stb_truetype.h`), and a vector clock engine.
 
 ---
@@ -23,5 +23,5 @@ Repozytorium zawiera zweryfikowaną, natywną konfigurację **ESP-IDF v5.5.3** d
 
 ### 🛠 Architektura i wydajność
 - **Środowisko:** Czyste ESP-IDF v5.5.3 z optymalizacją `-O3` oraz wsparciem dla kontenerów deweloperskich Docker.
-- **Strategia graficzna:** Autorski mechanizm synchronizacji z rastrem (odczyt rejestru `0x50120040`) i sprzętowe przełączanie stron w PSRAM zapewniają płynne 60 FPS bez narzutu ciężkich bibliotek UI.
+- **Strategia graficzna:** Płynne 60 FPS bez narzutu ciężkich bibliotek UI.
 - **Plany rozwoju:** Wdrożenie obsługi dotyku GSL3680, czcionek wektorowych (`stb_truetype.h`) oraz silnika zegara wektorowego.
