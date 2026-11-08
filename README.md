@@ -1,3 +1,5 @@
+![JC8012P4A1_RTC_CLOCK](/PICTURES/clock.jpg)
+
 # ESP32-P4 (ECO2) Native ESP-IDF MIPI-DSI 10" Project
 
 🌐 **Language / Język:** [English](#-english-version) | [Wersja Polska](#-wersja-polska)
