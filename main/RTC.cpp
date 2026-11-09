@@ -16,6 +16,7 @@
 #include "nvs_flash.h"
 #include "nvs.h"
 #include "esp_spiffs.h"
+#include "esp_jpeg_dec.h"
 
 // Naglowki Twojego podsystemu graficznego i sprzetu
 #include "renderer.hpp"
@@ -71,10 +72,6 @@ volatile uint32_t g_my_4h_counter = 0;
 volatile bool g_trigger_auto_photo = false;
 volatile int PHOTO_NR = 0;    // Zmienna globalna do przechowywania numeru aktualnego zdjęcia (1 lub 2)
 static int old_seconds = 111; // Zmienna do filtrowania zbocza sekundy (Edge Detection)
-
-// NOWOŚĆ: Te wskaźniki zostaną idealnie wyrównane matematycznie i podane do dekodera
-uint8_t *g_statyczny_bufor_bmp = NULL;
-const size_t ROZMIAR_MAX_BMP = 1280 * 800 * 3 + 64;
 
 //=====================================================================================================
 //=====================================================================================================
@@ -255,11 +252,11 @@ void vTaskTouch(void *pvParameters)
 
             if (PHOTO_NR == 0)
             {
-                wyswietl_bmp_ze_spiffs("/spiffs/FOTO1.bmp");
+                wyswietl_jpeg_ze_spiffs("/spiffs/FOTO1.jpg");
             }
             else
             {
-                wyswietl_bmp_ze_spiffs("/spiffs/FOTO2.bmp");
+                wyswietl_jpeg_ze_spiffs("/spiffs/FOTO2.jpg");
             }
             old_seconds = 111;
             vTaskDelay(pdMS_TO_TICKS(5 * 1000));
@@ -291,29 +288,10 @@ void init_RTC_subsystem(void)
 {
     // NOWOŚĆ: Montujemy dysk zanim ruszą zadania FreeRTOS
     init_spiffs_storage();
-    printf("[SYSTEM] Alokacja statycznych buforów graficznych w PSRAM...\n");
 
-    printf("[SYSTEM] Alokacja statycznych buforów graficznych w PSRAM z wyrownaniem 64B...\n");
-
-    // Zaokrąglamy rozmiary buforów do wielokrotności 64 bajtów dla Cache
-    // TO WSTAWIASZ W ZAMIAN:
-    g_statyczny_bufor_bmp = (uint8_t *)heap_caps_malloc(ROZMIAR_MAX_BMP, MALLOC_CAP_SPIRAM);
-    if (g_statyczny_bufor_bmp == NULL)
-    {
-        printf("[KRK] BLAD KRYTYCZNY: Brak pamieci w PSRAM dla bufora BMP!\n");
-    }
-    else
-    {
-        printf("[SYSTEM_SUCCESS] Zarezerwowano bufor dla podsystemu graficznego BMP.\n");
-    }
-
-    // Drukowanie adresów fizycznych buforów w formacie HEX
-    printf("[HEX_DIAG] Adres statycznego bufora BMP:    %p\n", (void *)g_statyczny_bufor_bmp);
-    printf("[HEX_DIAG] Adres sprzętowego bufora ekranu fbs[0]: %p\n", (void *)fbs[0]);
-
-    // TESTOWE WYŚWIETLENIE PIERWSZEGO ZDJĘCIA (Zaraz po starcie na chwilę pokaże FOTO1.bmp!)
+    // TESTOWE WYŚWIETLENIE PIERWSZEGO ZDJĘCIA (Zaraz po starcie na chwilę pokaże FOTO1.jpg!)
     set_backlight_brightness(100);
-    wyswietl_bmp_ze_spiffs("/spiffs/FOTO1.bmp");
+    wyswietl_jpeg_ze_spiffs("/spiffs/FOTO1.jpg");
     vTaskDelay(pdMS_TO_TICKS(3000)); // Pokazuj zdjęcie przez 3 sekundy, zanim wystartuje główny zegar!
     uint32_t duty;
     for (uint8_t t = 100; t > 0; t--)
@@ -1584,27 +1562,27 @@ void init_spiffs_storage(void)
         printf("[SPIFFS_SUCCESS] Partycja zamontowana! Rozmiar: %d KB, Uzyto: %d KB\n", total / 1024, used / 1024);
 
         // TWARDE I JAWNE SPRAWDZENIE TWOICH ZDJĘĆ Z FOLDERU FOTOS
-        FILE *f1 = fopen("/spiffs/FOTO1.bmp", "r");
-        FILE *f2 = fopen("/spiffs/FOTO2.bmp", "r");
+        FILE *f1 = fopen("/spiffs/FOTO1.jpg", "r");
+        FILE *f2 = fopen("/spiffs/FOTO2.jpg", "r");
 
         if (f1 != NULL)
         {
-            printf("[SPIFFS_TEST] SUKCES: Wykryto plik -> /spiffs/FOTO1.bmp\n");
+            printf("[SPIFFS_TEST] SUKCES: Wykryto plik -> /spiffs/FOTO1.jpg\n");
             fclose(f1);
         }
         else
         {
-            printf("[SPIFFS_TEST] BLAD: Brak pliku FOTO1.bmp na partycji Flash!\n");
+            printf("[SPIFFS_TEST] BLAD: Brak pliku FOTO1.jpg na partycji Flash!\n");
         }
 
         if (f2 != NULL)
         {
-            printf("[SPIFFS_TEST] SUKCES: Wykryto plik -> /spiffs/FOTO2.bmp\n");
+            printf("[SPIFFS_TEST] SUKCES: Wykryto plik -> /spiffs/FOTO2.jpg\n");
             fclose(f2);
         }
         else
         {
-            printf("[SPIFFS_TEST] BLAD: Brak pliku FOTO2.bmp na partycji Flash!\n");
+            printf("[SPIFFS_TEST] BLAD: Brak pliku FOTO2.jpg na partycji Flash!\n");
         }
     }
 }
@@ -1622,7 +1600,6 @@ void vTaskAutoPhotoTimer(void *pvParameters)
     while (1)
     {
         vTaskDelay(pdMS_TO_TICKS(5 * 60 * 1000));
-        // vTaskDelay(pdMS_TO_TICKS(5 * 60 * 1000));
         g_trigger_auto_photo = true;
         printf("[TIMER] Minelo 5 minut! Wyzwalam pokaz zdjecia.\n");
     }
@@ -1634,38 +1611,88 @@ void vTaskAutoPhotoTimer(void *pvParameters)
 //=====================================================================================================
 //=====================================================================================================
 //=====================================================================================================
-void wyswietl_bmp_ze_spiffs(const char *sciezka_pliku)
+void wyswietl_jpeg_ze_spiffs(const char *sciezka_pliku)
 {
-    if (g_statyczny_bufor_bmp == NULL)
-        return;
-    printf("[BMP] Odczyt pliku: %s\n", sciezka_pliku);
+    printf("[JPEG] Odczyt pliku: %s\n", sciezka_pliku);
     FILE *f = fopen(sciezka_pliku, "rb");
     if (f == NULL)
-        return;
-    fread(g_statyczny_bufor_bmp, 1, ROZMIAR_MAX_BMP, f);
-    fclose(f);
-    uint16_t *bufor_ekranu = (uint16_t *)fbs[0];
-
-    for (int y = 0; y < 1280; y++)
     {
-        int bmp_y = 1279 - y;
-        int idx = 54 + (bmp_y * 800 * 3);
-        int screen_idx = y * 800;
-        for (int x = 0; x < 800; x++)
-        {
-            uint8_t b = g_statyczny_bufor_bmp[idx + 0];
-            uint8_t g = g_statyczny_bufor_bmp[idx + 1];
-            uint8_t r = g_statyczny_bufor_bmp[idx + 2];
-            idx += 3;
-            bufor_ekranu[screen_idx + x] = ((r & 0xF8) << 8) | ((g & 0xFC) << 3) | (b >> 3);
-        }
+        printf("[JPEG_ERROR] Nie mozna otworzyc pliku: %s\n", sciezka_pliku);
+        return;
     }
 
-    esp_cache_msync((void *)bufor_ekranu, BUFFER_SIZE, ESP_CACHE_MSYNC_FLAG_DIR_C2M);
+    // 1. Sprawdzamy rozmiar pliku JPEG
+    fseek(f, 0, SEEK_END);
+    long file_size = ftell(f);
+    fseek(f, 0, SEEK_SET);
+
+    const size_t screen_bytes = LCD_H_RES * LCD_V_RES * 2;  // Pierwsze 2 MB: wyjscie RGB565
+    const size_t max_jpg_bytes = LCD_H_RES * LCD_V_RES * 1; // Trzeci 1 MB: bufor na plik .jpg
+
+    if (file_size <= 0 || (size_t)file_size > max_jpg_bytes)
+    {
+        printf("[JPEG_ERROR] Plik za duzy (%ld B) lub pusty! Limit to 1 MB.\n", file_size);
+        fclose(f);
+        return;
+    }
+
+    // 2. Wczytujemy plik .jpg dokladnie na poczatek trzeciego megabajta (offset +2 MB)
+    uint8_t *base_ptr = (uint8_t *)fbs[0];
+    uint8_t *jpeg_input_ptr = base_ptr + screen_bytes;
+
+    size_t read_bytes = fread(jpeg_input_ptr, 1, file_size, f);
+    fclose(f);
+
+    if (read_bytes != (size_t)file_size)
+    {
+        printf("[JPEG_ERROR] Blad odczytu pliku ze SPIFFS!\n");
+        return;
+    }
+
+    // 3. Konfiguracja dekodera esp_new_jpeg (bezposrednio do RGB565_LE)
+    jpeg_dec_config_t config = DEFAULT_JPEG_DEC_CONFIG();
+    config.output_type = JPEG_PIXEL_FORMAT_RGB565_LE;
+    config.rotate = JPEG_ROTATE_0D;
+
+    jpeg_dec_handle_t jpeg_dec = NULL;
+    if (jpeg_dec_open(&config, &jpeg_dec) != JPEG_ERR_OK)
+    {
+        printf("[JPEG_ERROR] Nie udalo sie zainicjalizowac dekodera JPEG!\n");
+        return;
+    }
+
+    jpeg_dec_io_t jpeg_io = {};
+    jpeg_io.inbuf = jpeg_input_ptr;
+    jpeg_io.inbuf_len = file_size;
+
+    jpeg_dec_header_info_t out_info = {};
+    if (jpeg_dec_parse_header(jpeg_dec, &jpeg_io, &out_info) != JPEG_ERR_OK)
+    {
+        printf("[JPEG_ERROR] Nieprawidlowy naglowek pliku JPEG!\n");
+        jpeg_dec_close(jpeg_dec);
+        return;
+    }
+
+    // Dekodujemy z 3. megabajta prosto na pierwsze 2 MB bufora fbs[0]
+    jpeg_io.outbuf = base_ptr;
+
+    if (jpeg_dec_process(jpeg_dec, &jpeg_io) != JPEG_ERR_OK)
+    {
+        printf("[JPEG_ERROR] Blad podczas dekompresji obrazu JPEG!\n");
+        jpeg_dec_close(jpeg_dec);
+        return;
+    }
+
+    jpeg_dec_close(jpeg_dec);
+
+    // 4. Synchronizacja Cache dla 2 MB obrazu i wyslanie na ekran przez DMA
+    esp_cache_msync((void *)fbs[0], screen_bytes, ESP_CACHE_MSYNC_FLAG_DIR_C2M);
     xSemaphoreTake(vsync_sem, portMAX_DELAY);
-    lcd.lcd_draw_bitmap(0, 0, LCD_H_RES, LCD_V_RES, (uint8_t *)bufor_ekranu);
-    printf("[BMP_SUCCESS] Obraz bezkompresyjny wyslany na LCD!\n");
+    lcd.lcd_draw_bitmap(0, 0, LCD_H_RES, LCD_V_RES, (uint8_t *)fbs[0]);
+
+    printf("[JPEG_SUCCESS] Obraz %dx%d zdekompresowany i wyslany na LCD!\n", out_info.width, out_info.height);
 }
+
 //=====================================================================================================
 //=====================================================================================================
 //=====================================================================================================

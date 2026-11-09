@@ -19,6 +19,7 @@ idf_component_register(
         nvs_flash 
         lwip
         spiffs
+        esp_new_jpeg
 )
 
 #spiffs_create_partition_image(storage "${CMAKE_CURRENT_LIST_DIR}/../FOTOS" FLASH_IN_PROJECT)

@@ -35,4 +35,4 @@ void vTaskFourHourIncrementer(void *pvParameters);
 void init_spiffs_storage(void);
 // void wyswietl_jpg_ze_spiffs(const char *sciezka_pliku);
 void vTaskAutoPhotoTimer(void *pvParameters);
-void wyswietl_bmp_ze_spiffs(const char *sciezka_pliku);
+void wyswietl_jpeg_ze_spiffs(const char *sciezka_pliku);

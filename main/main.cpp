@@ -150,7 +150,7 @@ extern "C" void app_main(void)
     esp_lcd_dpi_panel_register_event_callbacks(dpi_handle, &cbs, NULL);
 
     // Alokacja dwóch buforów w PSRAM z wyrównaniem do linii Cache (64 bajty)
-    size_t buffer_size = LCD_H_RES * LCD_V_RES * sizeof(uint16_t);
+    size_t buffer_size = LCD_H_RES * LCD_V_RES * 3;
     fbs[0] = (uint16_t *)heap_caps_aligned_alloc(64, buffer_size, MALLOC_CAP_SPIRAM);
 
     printf("[MEM_2] Po alokacji fbs[0] (Twoje 2MB pobrane): %u KB wolnego\n", heap_caps_get_free_size(MALLOC_CAP_SPIRAM) / 1024);
