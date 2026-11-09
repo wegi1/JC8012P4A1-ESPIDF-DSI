@@ -259,7 +259,7 @@ void vTaskTouch(void *pvParameters)
                 wyswietl_jpeg_ze_spiffs("/spiffs/FOTO2.jpg");
             }
             old_seconds = 111;
-            vTaskDelay(pdMS_TO_TICKS(5 * 1000));
+            vTaskDelay(pdMS_TO_TICKS(12 * 1000));
 
             // Twardy reset bufora ramki na czarno po zakończeniu zdjęcia, aby wyczyścić potok DMA:
             uint16_t *clear_buf = (uint16_t *)fbs[0];
