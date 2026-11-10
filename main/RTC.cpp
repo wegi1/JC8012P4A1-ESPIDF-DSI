@@ -40,10 +40,8 @@ extern jd9365_lcd lcd;
 // ZAMYKAMY DEKLARACJĘ DOTYKU W BLOKU ZGODNOŚCI "C":
 extern gsl3680_touch touch;
 
-extern uint8_t BRIGHTNESS;
+extern uint16_t *fbs[1]; // Bufory ramki (framebuffer) dla wyświetlacza
 
-extern uint16_t *fbs[2];
-extern volatile int back_buffer_idx;
 extern SemaphoreHandle_t vsync_sem;
 // Wskaźnik (uchwyt) do zadania gaszenia dwukropka
 TaskHandle_t hTaskDisableColon = NULL;
@@ -63,16 +61,13 @@ static char txt_sek[4];
 
 volatile bool is_editing_time = false;
 
-volatile int current_day = 1;     // Zakres 1 - 31 (zależnie od miesiąca)
-volatile int current_month = 1;   // Zakres 1 - 12
-volatile int current_year = 2026; // Zakres np. 2026 - 2099
-
-volatile uint8_t current_brightness = 50;
+volatile uint8_t BRIGHTNESS = 50; // Zakres 0 - 100
 volatile uint32_t g_my_4h_counter = 0;
 volatile bool g_trigger_auto_photo = false;
 volatile int PHOTO_NR = 0;    // Zmienna globalna do przechowywania numeru aktualnego zdjęcia (1 lub 2)
 static int old_seconds = 111; // Zmienna do filtrowania zbocza sekundy (Edge Detection)
 
+SemaphoreHandle_t fb_mutex = NULL;
 //=====================================================================================================
 //=====================================================================================================
 //=====================================================================================================
@@ -102,6 +97,7 @@ void vTaskDisableColon(void *pvParameters)
         }
 
         // rtc_start = esp_timer_get_time();
+        xSemaphoreTake(fb_mutex, portMAX_DELAY);
         // 3. Od razu na nim GASIMY kwadraciki dwukropka
         draw_rectangle_90(back_buffer, LCD_H_RES, LCD_V_RES, 605, 104, 50, 50, 0x0000);
         draw_rectangle_90(back_buffer, LCD_H_RES, LCD_V_RES, 605, 300, 50, 50, 0x0000);
@@ -111,7 +107,7 @@ void vTaskDisableColon(void *pvParameters)
 
         // 7. Wysłanie klatki bez dwukropka na ekran przez DMA
         lcd.lcd_draw_bitmap(0, 0, LCD_H_RES, LCD_V_RES, (uint8_t *)back_buffer);
-
+        xSemaphoreGive(fb_mutex);
         // rtc_end = esp_timer_get_time();
         // printf("[PROFILER] RENDER COLON (vTaskDisableColon) zajął: %llu us\n", (rtc_end - rtc_start));
     }
@@ -209,7 +205,7 @@ void vTaskTouch(void *pvParameters)
             // SEKCJA MIESIĘCY
             if (touchX >= 1 && touchX <= 120 && touchY >= 400 && touchY <= 560)
             {
-                printf("[TOUCH] -> Wykryto kliknięcie w USTAWIENIE ROKU!\n");
+                printf("[TOUCH] -> Wykryto kliknięcie w USTAWIENIE MIESIĘCY!\n");
                 if (hTaskMenuEngine != NULL)
                 {
                     is_editing_time = true;
@@ -221,7 +217,7 @@ void vTaskTouch(void *pvParameters)
             // SEKCJA DNI
             if (touchX >= 1 && touchX <= 120 && touchY >= 570 && touchY <= 870)
             {
-                printf("[TOUCH] -> Wykryto kliknięcie w USTAWIENIE ROKU!\n");
+                printf("[TOUCH] -> Wykryto kliknięcie w USTAWIENIE DNI!\n");
                 if (hTaskMenuEngine != NULL)
                 {
                     is_editing_time = true;
@@ -258,24 +254,37 @@ void vTaskTouch(void *pvParameters)
             {
                 wyswietl_jpeg_ze_spiffs("/spiffs/FOTO2.jpg");
             }
-            old_seconds = 111;
-            vTaskDelay(pdMS_TO_TICKS(12 * 1000));
-
-            // Twardy reset bufora ramki na czarno po zakończeniu zdjęcia, aby wyczyścić potok DMA:
-            uint16_t *clear_buf = (uint16_t *)fbs[0];
-            safe_clear_screen(clear_buf, 0x0000);
-            esp_cache_msync((void *)clear_buf, BUFFER_SIZE, ESP_CACHE_MSYNC_FLAG_DIR_C2M | ESP_CACHE_MSYNC_FLAG_INVALIDATE);
+            vTaskDelay(pdMS_TO_TICKS(12 * 1000)); // 12 sec.
+            uint32_t duty;
+            for (int t = BRIGHTNESS; t >= 0; t--)
+            {
+                duty = (t * 1023) / 100;
+                ledc_set_duty(BACKLIGHT_LEDC_MODE, BACKLIGHT_LEDC_CHANNEL, duty);
+                ledc_update_duty(BACKLIGHT_LEDC_MODE, BACKLIGHT_LEDC_CHANNEL);
+                vTaskDelay(pdMS_TO_TICKS(50));
+            }
+            xSemaphoreTake(fb_mutex, portMAX_DELAY);
+            safe_clear_screen((uint16_t *)fbs[0], 0x0000);
+            esp_cache_msync((void *)fbs[0], BUFFER_SIZE, ESP_CACHE_MSYNC_FLAG_DIR_C2M);
             xSemaphoreTake(vsync_sem, portMAX_DELAY);
-            lcd.lcd_draw_bitmap(0, 0, LCD_H_RES, LCD_V_RES, (uint8_t *)clear_buf);
+            lcd.lcd_draw_bitmap(0, 0, LCD_H_RES, LCD_V_RES, (uint8_t *)fbs[0]);
+            xSemaphoreGive(fb_mutex);
 
             old_seconds = 111;
             PHOTO_NR = PHOTO_NR ^ 1; // Przełączanie między FOTO1 a FOTO2 (0 <-> 1)
             g_trigger_auto_photo = false;
             is_editing_time = false;
             printf("[TOUCH] Pokaz zakonczony, wracam do zegara glownego.\n");
-            vTaskDelay(pdMS_TO_TICKS(500));
-        }
+            vTaskDelay(pdMS_TO_TICKS(250));
 
+            for (int t = 0; t <= BRIGHTNESS; t++)
+            {
+                duty = (t * 1023) / 100;
+                ledc_set_duty(BACKLIGHT_LEDC_MODE, BACKLIGHT_LEDC_CHANNEL, duty);
+                ledc_update_duty(BACKLIGHT_LEDC_MODE, BACKLIGHT_LEDC_CHANNEL);
+                vTaskDelay(pdMS_TO_TICKS(50));
+            }
+        }
         vTaskDelay(pdMS_TO_TICKS(20));
     }
 }
@@ -286,15 +295,27 @@ void vTaskTouch(void *pvParameters)
 // Funkcja wywoływana raz w app_main() w celu rejestracji zadań w jądrze FreeRTOS
 void init_RTC_subsystem(void)
 {
+    uint32_t duty;
     // NOWOŚĆ: Montujemy dysk zanim ruszą zadania FreeRTOS
     init_spiffs_storage();
+    fb_mutex = xSemaphoreCreateMutex();
 
     // TESTOWE WYŚWIETLENIE PIERWSZEGO ZDJĘCIA (Zaraz po starcie na chwilę pokaże FOTO1.jpg!)
-    set_backlight_brightness(100);
+    // Wygaszamy ekran na start, zanim pokażemy zdjęcie
+    ledc_set_duty(BACKLIGHT_LEDC_MODE, BACKLIGHT_LEDC_CHANNEL, 0);
+    ledc_update_duty(BACKLIGHT_LEDC_MODE, BACKLIGHT_LEDC_CHANNEL);
+
     wyswietl_jpeg_ze_spiffs("/spiffs/FOTO1.jpg");
-    vTaskDelay(pdMS_TO_TICKS(3000)); // Pokazuj zdjęcie przez 3 sekundy, zanim wystartuje główny zegar!
-    uint32_t duty;
-    for (uint8_t t = 100; t > 0; t--)
+    for (int t = 0; t <= 100; t++)
+    {
+        duty = (t * 1023) / 100;
+        ledc_set_duty(BACKLIGHT_LEDC_MODE, BACKLIGHT_LEDC_CHANNEL, duty);
+        ledc_update_duty(BACKLIGHT_LEDC_MODE, BACKLIGHT_LEDC_CHANNEL);
+        vTaskDelay(pdMS_TO_TICKS(20));
+    }
+    vTaskDelay(pdMS_TO_TICKS(5000)); // Pokazuj zdjęcie przez 3 sekundy, zanim wystartuje główny zegar!
+
+    for (int t = 100; t >= 0; t--)
     {
         duty = (t * 1023) / 100;
         ledc_set_duty(BACKLIGHT_LEDC_MODE, BACKLIGHT_LEDC_CHANNEL, duty);
@@ -307,7 +328,6 @@ void init_RTC_subsystem(void)
     lcd.lcd_draw_bitmap(0, 0, LCD_H_RES, LCD_V_RES, (uint8_t *)fbs[0]);
     vTaskDelay(pdMS_TO_TICKS(500));
     BRIGHTNESS = load_brightness_from_NVS(); // Wczytanie starej jasności
-    set_backlight_brightness(BRIGHTNESS);
 
     xTaskCreate(vTaskAutoPhotoTimer, "vTaskAutoPhoto", 2048, NULL, 2, NULL);
     printf("[LOG] Podsystem RTC: Zadanie auto-foto 5-minutowe zarejestrowane.\n");
@@ -324,6 +344,15 @@ void init_RTC_subsystem(void)
     xTaskCreate(vTaskFourHourIncrementer, "vTask4hInc", 2048, NULL, 2, NULL);
 
     printf("[LOG] Podsystem RTC: Licznik 4h został zarejestrowany.\n");
+
+    print_RTC();
+    for (int t = 0; t <= BRIGHTNESS; t++)
+    {
+        duty = (t * 1023) / 100;
+        ledc_set_duty(BACKLIGHT_LEDC_MODE, BACKLIGHT_LEDC_CHANNEL, duty);
+        ledc_update_duty(BACKLIGHT_LEDC_MODE, BACKLIGHT_LEDC_CHANNEL);
+        vTaskDelay(pdMS_TO_TICKS(50));
+    }
 }
 
 //=====================================================================================================
@@ -339,8 +368,6 @@ void print_RTC(void)
     char tekst[32];
 
     uint16_t *main_buffer = (uint16_t *)fbs[0];
-    // TWARDE WYCZYSZCZENIE CACHE PRZED STARTEM RENDERU ZEGARA
-    esp_cache_msync((void *)fbs[0], BUFFER_SIZE, ESP_CACHE_MSYNC_FLAG_DIR_M2C | ESP_CACHE_MSYNC_FLAG_INVALIDATE);
 
     // uint64_t rtc_start = 0;
     // uint64_t rtc_end = 0;
@@ -359,6 +386,9 @@ void print_RTC(void)
         return;
     }
     old_seconds = second_now;
+    xSemaphoreTake(fb_mutex, portMAX_DELAY);
+    esp_cache_msync((void *)fbs[0], BUFFER_SIZE, ESP_CACHE_MSYNC_FLAG_DIR_M2C | ESP_CACHE_MSYNC_FLAG_INVALIDATE);
+
     char txt_slider_pct[16];
     snprintf(txt_slider_pct, sizeof(txt_slider_pct), "%d%%", BRIGHTNESS);
 
@@ -369,10 +399,7 @@ void print_RTC(void)
 
     // 1. Czyszczenie jedynego bufora na czarno
     safe_clear_screen(main_buffer, 0x0000);
-    if (is_editing_time == true)
-    {
-        return;
-    }
+
     int width_bar = 380 * BRIGHTNESS / 100;
     // 2. Rysowanie bazy zegara (czcionki wektorowe bezpośrednio na nim)
     draw_clock_perfect_monospace_90(main_buffer, LCD_H_RES, LCD_V_RES, digital_7_ttf, txt_godz, 0, 0, 370.0f, 0xFFFF);
@@ -384,10 +411,7 @@ void print_RTC(void)
     int week_day = calc_dow((dane_czasu.tm_year + 1900), (dane_czasu.tm_mon + 1), dane_czasu.tm_mday);
     draw_text_90(main_buffer, LCD_H_RES, LCD_V_RES, getDayofweek(week_day), 350, 455, 200.0f, 0xFFFF);
     draw_text_90(main_buffer, LCD_H_RES, LCD_V_RES, txt_slider_pct, 1020, 690, 80.0f, 0xFFFF);
-    if (is_editing_time == true)
-    {
-        return;
-    }
+
     // 3. Od razu na nim zapalamy kwadraciki dwukropka
     draw_rectangle_90(main_buffer, LCD_H_RES, LCD_V_RES, 605, 104, 50, 50, 0xFFFF);
     draw_rectangle_90(main_buffer, LCD_H_RES, LCD_V_RES, 605, 300, 50, 50, 0xFFFF);
@@ -396,17 +420,11 @@ void print_RTC(void)
     esp_cache_msync((void *)main_buffer, BUFFER_SIZE, ESP_CACHE_MSYNC_FLAG_DIR_C2M);
 
     // 5. Czekamy na VSYNC i wypychamy DMA na ekran MIPI-DSI
-    if (is_editing_time == true)
-    {
-        return;
-    }
-    xSemaphoreTake(vsync_sem, portMAX_DELAY);
-    if (is_editing_time == true)
-    {
-        return;
-    }
-    lcd.lcd_draw_bitmap(0, 0, LCD_H_RES, LCD_V_RES, (uint8_t *)main_buffer);
 
+    xSemaphoreTake(vsync_sem, portMAX_DELAY);
+
+    lcd.lcd_draw_bitmap(0, 0, LCD_H_RES, LCD_V_RES, (uint8_t *)main_buffer);
+    xSemaphoreGive(fb_mutex);
     // 6. Wybudzamy task gaszenia dwukropka (który po 500 ms tylko go zamaluje na czarno)
     if (hTaskDisableColon != NULL)
     {
@@ -445,135 +463,21 @@ void draw_hollow_rectangle_90(uint16_t *buffer, uint16_t buf_w, uint16_t buf_h,
 //=====================================================================================================
 void set_minutes_menu(void)
 {
-    uint16_t touchX = 0;
-    uint16_t touchY = 0;
-    int hold_counter = 0;
-
-    printf("[MENU] -> Uruchomiono WIZUALNY tryb edycji MINUT w wątku dotyku!\n");
-
-    // 1. Blokujemy automatyczne odświeżanie głównego zegara
-    is_editing_time = true;
-
-    // 2. Pobieramy aktualny czas z zewnętrznej kostki RX8025T jako bazę do edycji
-    rx8025t_time_t setup_time;
-    if (rx8025t_get_time(&setup_time) != ESP_OK)
+    rx8025t_time_t t;
+    if (rx8025t_get_time(&t) != ESP_OK)
     {
-        printf("[ERROR] Brak komunikacji z RX8025T!\n");
         is_editing_time = false;
         return;
     }
-
-    uint8_t current_min = setup_time.minute;
-
-    // Pobieramy wskaźnik na roboczy bufor tła
-    uint16_t *menu_buffer = (uint16_t *)fbs[0];
-    safe_clear_screen(menu_buffer, 0x0000);
-    esp_cache_msync((void *)menu_buffer, BUFFER_SIZE, ESP_CACHE_MSYNC_FLAG_DIR_C2M);
-
-    bool content_changed = true; // Na starcie wymuszamy pierwsze rysowanie menu
-    // GŁÓWNA PĘTLA EDYCJI (Kręci się w wątku vTaskTouch, dopóki is_editing_time == true)
-    while (is_editing_time)
+    uint8_t new_min = edit_number_menu("SET MINUTS", 280, t.minute, 0, 59, false);
+    if (rx8025t_get_time(&t) == ESP_OK)
     {
-        // 1. Zerujemy zmienne przed każdym sprawdzaniem
-        touchX = 0;
-        touchY = 0;
-
-        // 2. Jeśli funkcja zwróci false (brak fizycznego dotyku),
-        // zmienne pozostaną wyzerowane i żaden warunek na dole się nie wyzwoli
-        if (!touch.getTouch(&touchX, &touchY))
+        t.minute = new_min;
+        if (rx8025t_set_time(&t) == ESP_OK)
         {
-            touchX = 0;
-            touchY = 0;
-        }
-
-        // -------------------------------------------------------------------------
-        // SEKCIJA RENDEROWANIA: Rysujemy całe menu od zera na buforze w każdym obiegu
-        // -------------------------------------------------------------------------
-
-        // A. Czyszczenie bufora na czarno (czysta karta dla menu)
-        // safe_clear_screen(menu_buffer, 0x0000);
-
-        // B. Napisy nagłówkowe (używamy SourceCodePro lub digital_7 zależnie od dostępności)
-        // Format: draw_clock_perfect_monospace_90(buffer, buf_w, buf_h, font, text, x, y, size, color)
-        //        draw_clock_perfect_monospace_90(menu_buffer, LCD_H_RES, LCD_V_RES, digital_7_ttf, "SET MINUTS", 100, 50, 100.0f, 0xFFFF);
-        if (content_changed == true)
-        {
-
-            draw_common_menu_base();
-
-            draw_text_90(menu_buffer, LCD_H_RES, LCD_V_RES, "SET MINUTS", 280, 20, 150.0f, 0xFFFF);
-
-            // C. Rysowanie aktualnie modyfikowanej wartości minut (na środku ekranu)
-            char txt_current_min[4];
-            snprintf(txt_current_min, sizeof(txt_current_min), "%02d", current_min);
-            draw_clock_perfect_monospace_90(menu_buffer, LCD_H_RES, LCD_V_RES, digital_7_ttf, txt_current_min, 470, 250, 220.0f, 0xFFFF);
-
-            //******************************************************** */
-            show_debug_touch(touchX, touchY);
-            // draw_test_cross();
-            //*********************************************************** */
-            //  E. Wypchnięcie gotowej klatki menu na ekran MIPI-DSI z synchronizacją Cache i VSYNC
-            esp_cache_msync((void *)menu_buffer, BUFFER_SIZE, ESP_CACHE_MSYNC_FLAG_DIR_C2M);
-            xSemaphoreTake(vsync_sem, portMAX_DELAY);
-            lcd.lcd_draw_bitmap(0, 0, LCD_H_RES, LCD_V_RES, (uint8_t *)menu_buffer);
-            content_changed = false;
-        }
-        /********************************************** */
-        // Obsługa dotyku dopasowana do fizycznego mapowania kontrolera (Natywny pion)
-        if (touchX > 0 && touchY > 0)
-        {
-            // Obsługa przycisków MINUS, PLUS oraz DONE z blokadą stanową touch_busy...
-            // 1. MINUS
-            if (touchX >= 200 && touchX <= 600 && touchY >= 50 && touchY <= 350 && (hold_counter == 1 || (hold_counter > 500 && hold_counter % 15 == 0)))
-            {
-                current_min = (current_min == 0) ? 59 : current_min - 1;
-                content_changed = true;
-                printf("[MENU] Fizyczny odczyt MINUS -> %02d\n", current_min);
-            }
-            // 2. PLUS
-            else if (touchX >= 200 && touchX <= 600 && touchY >= 950 && touchY <= 1250 && (hold_counter == 1 || (hold_counter > 500 && hold_counter % 15 == 0)))
-            {
-                current_min = (current_min == 59) ? 0 : current_min + 1;
-                content_changed = true;
-                printf("[MENU] Fizyczny odczyt PLUS -> %02d\n", current_min);
-            }
-            // 3. DONE
-            else if (touchX >= 50 && touchX <= 250 && touchY >= 450 && touchY <= 850)
-            {
-                // 1. Pobieramy AKTUALNY pełny stan rejestrów (godziny, sekundy, kalendarz) prosto z chipu
-                rx8025t_time_t final_time;
-                if (rx8025t_get_time(&final_time) == ESP_OK)
-                {
-                    // 2. Podmieniamy TYLKO minutę na tę, którą użytkownik wyklikał w menu
-                    final_time.minute = current_min;
-
-                    // 3. Zapisujemy zaktualizowaną strukturę z powrotem do układu scalonego RX8025T
-                    if (rx8025t_set_time(&final_time) == ESP_OK)
-                    {
-                        // 4. Synchronizujemy wbudowane, wewnętrzne RTC ESP32 z nowymi danymi z kostki
-                        sync_internal_rtc_with_rx8025t();
-                    }
-                }
-                break;
-            }
-            hold_counter++;
-        }
-        else
-        {
-            hold_counter = 0;
+            sync_internal_rtc_with_rx8025t();
         }
     }
-    //************************************* */
-    // Taktowanie bazy czasu: Jeśli brak dotyku, pętla czeka 16ms (~60Hz),
-    // nie obciążając procesora i dbając o natychmiastową reakcję.
-    if (touchX == 0 && touchY == 0)
-    {
-        vTaskDelay(pdMS_TO_TICKS(10));
-    }
-
-    // <<< TUTAJ DOSYPIEMY BLOKADĘ ANTY-POWRACALNĄ >>>
-    printf("[MENU] Done pressed. Czekam na puszczenie ekranu...\n");
-    wait_for_release();
 }
 //=====================================================================================================
 //=====================================================================================================
@@ -625,7 +529,7 @@ void vTaskMenuEngine(void *pvParameters)
     {
         // Funkcja czeka na powiadomienie i zapisuje przekazaną liczbę do zmiennej
         xTaskNotifyWait(0x00, ULONG_MAX, &menu_choice, portMAX_DELAY);
-        vTaskDelay(pdMS_TO_TICKS(50));
+        xSemaphoreTake(fb_mutex, portMAX_DELAY);
         if (hTaskDisableColon != NULL)
         {
             xTaskNotifyStateClear(hTaskDisableColon);
@@ -643,6 +547,7 @@ void vTaskMenuEngine(void *pvParameters)
         xSemaphoreTake(vsync_sem, portMAX_DELAY);
         // Wypychamy fizycznie czysty czarny ekran do kontrolera LCD
         lcd.lcd_draw_bitmap(0, 0, LCD_H_RES, LCD_V_RES, (uint8_t *)fbs[0]);
+        xSemaphoreGive(fb_mutex);
 
         vTaskDelay(pdMS_TO_TICKS(40)); // Dajemy czas na pełne przełączenie ekranu
 
@@ -737,136 +642,21 @@ void draw_common_menu_base(void)
 //=====================================================================================================
 void set_hours_menu(void)
 {
-    uint16_t touchX = 0;
-    uint16_t touchY = 0;
-    int hold_counter = 0;
-
-    printf("[MENU] -> Uruchomiono WIZUALNY tryb edycji MINUT w wątku dotyku!\n");
-
-    // 1. Blokujemy automatyczne odświeżanie głównego zegara
-    is_editing_time = true;
-
-    // 2. Pobieramy aktualny czas z zewnętrznej kostki RX8025T jako bazę do edycji
-    rx8025t_time_t setup_time;
-    if (rx8025t_get_time(&setup_time) != ESP_OK)
+    rx8025t_time_t t;
+    if (rx8025t_get_time(&t) != ESP_OK)
     {
-        printf("[ERROR] Brak komunikacji z RX8025T!\n");
         is_editing_time = false;
         return;
     }
-
-    uint8_t current_hour = setup_time.hour;
-
-    // Pobieramy wskaźnik na roboczy bufor tła
-    uint16_t *menu_buffer = (uint16_t *)fbs[0];
-    safe_clear_screen(menu_buffer, 0x0000);
-    esp_cache_msync((void *)menu_buffer, BUFFER_SIZE, ESP_CACHE_MSYNC_FLAG_DIR_C2M);
-    bool content_changed = true; // Na starcie wymuszamy pierwsze rysowanie menu
-
-    // GŁÓWNA PĘTLA EDYCJI (Kręci się w wątku vTaskTouch, dopóki is_editing_time == true)
-    while (is_editing_time)
+    uint8_t new_h = edit_number_menu("SET HOURS", 300, t.hour, 0, 23, false);
+    if (rx8025t_get_time(&t) == ESP_OK)
     {
-        // 1. Zerujemy zmienne przed każdym sprawdzaniem
-        touchX = 0;
-        touchY = 0;
-
-        // 2. Jeśli funkcja zwróci false (brak fizycznego dotyku),
-        // zmienne pozostaną wyzerowane i żaden warunek na dole się nie wyzwoli
-        if (!touch.getTouch(&touchX, &touchY))
+        t.hour = new_h;
+        if (rx8025t_set_time(&t) == ESP_OK)
         {
-            touchX = 0;
-            touchY = 0;
-        }
-
-        // -------------------------------------------------------------------------
-        // SEKCIJA RENDEROWANIA: Rysujemy całe menu od zera na buforze w każdym obiegu
-        // -------------------------------------------------------------------------
-
-        // A. Czyszczenie bufora na czarno (czysta karta dla menu)
-        // safe_clear_screen(menu_buffer, 0x0000);
-
-        // B. Napisy nagłówkowe (używamy SourceCodePro lub digital_7 zależnie od dostępności)
-        // Format: draw_clock_perfect_monospace_90(buffer, buf_w, buf_h, font, text, x, y, size, color)
-        //        draw_clock_perfect_monospace_90(menu_buffer, LCD_H_RES, LCD_V_RES, digital_7_ttf, "SET MINUTS", 100, 50, 100.0f, 0xFFFF);
-        if (content_changed == true)
-        {
-
-            draw_common_menu_base();
-
-            draw_text_90(menu_buffer, LCD_H_RES, LCD_V_RES, "SET HOURS", 300, 20, 150.0f, 0xFFFF);
-
-            // C. Rysowanie aktualnie modyfikowanej wartości minut (na środku ekranu)
-            char txt_current_hour[4];
-            snprintf(txt_current_hour, sizeof(txt_current_hour), "%02d", current_hour);
-            draw_clock_perfect_monospace_90(menu_buffer, LCD_H_RES, LCD_V_RES, digital_7_ttf, txt_current_hour, 470, 250, 220.0f, 0xFFFF);
-
-            //******************************************************** */
-            show_debug_touch(touchX, touchY);
-            // draw_test_cross();
-            //*********************************************************** */
-            //  E. Wypchnięcie gotowej klatki menu na ekran MIPI-DSI z synchronizacją Cache i VSYNC
-            esp_cache_msync((void *)menu_buffer, BUFFER_SIZE, ESP_CACHE_MSYNC_FLAG_DIR_C2M);
-            xSemaphoreTake(vsync_sem, portMAX_DELAY);
-            lcd.lcd_draw_bitmap(0, 0, LCD_H_RES, LCD_V_RES, (uint8_t *)menu_buffer);
-            content_changed = false;
-        }
-
-        /********************************************** */
-        // Obsługa dotyku dopasowana do fizycznego mapowania kontrolera (Natywny pion)
-        if (touchX > 0 && touchY > 0)
-        {
-            // Obsługa przycisków MINUS, PLUS oraz DONE z blokadą stanową touch_busy...
-            // 1. MINUS
-            if (touchX >= 200 && touchX <= 600 && touchY >= 50 && touchY <= 350 && (hold_counter == 1 || (hold_counter > 500 && hold_counter % 15 == 0)))
-            {
-                current_hour = (current_hour == 0) ? 23 : current_hour - 1;
-                content_changed = true;
-                printf("[MENU] Fizyczny odczyt MINUS -> %02d\n", current_hour);
-            }
-            // 2. PLUS
-            else if (touchX >= 200 && touchX <= 600 && touchY >= 950 && touchY <= 1250 && (hold_counter == 1 || (hold_counter > 500 && hold_counter % 15 == 0)))
-            {
-                current_hour = (current_hour == 23) ? 0 : current_hour + 1;
-                content_changed = true;
-                printf("[MENU] Fizyczny odczyt PLUS -> %02d\n", current_hour);
-            }
-            // 3. DONE
-            else if (touchX >= 50 && touchX <= 250 && touchY >= 450 && touchY <= 850)
-            {
-                // 1. Pobieramy AKTUALNY pełny stan rejestrów (godziny, sekundy, kalendarz) prosto z chipu
-                rx8025t_time_t final_time;
-                if (rx8025t_get_time(&final_time) == ESP_OK)
-                {
-                    // 2. Podmieniamy TYLKO minutę na tę, którą użytkownik wyklikał w menu
-                    final_time.hour = current_hour;
-
-                    // 3. Zapisujemy zaktualizowaną strukturę z powrotem do układu scalonego RX8025T
-                    if (rx8025t_set_time(&final_time) == ESP_OK)
-                    {
-                        // 4. Synchronizujemy wbudowane, wewnętrzne RTC ESP32 z nowymi danymi z kostki
-                        sync_internal_rtc_with_rx8025t();
-                    }
-                }
-                break;
-            }
-            hold_counter++;
-        }
-        else
-        {
-            hold_counter = 0;
+            sync_internal_rtc_with_rx8025t();
         }
     }
-    //************************************* */
-    // Taktowanie bazy czasu: Jeśli brak dotyku, pętla czeka 16ms (~60Hz),
-    // nie obciążając procesora i dbając o natychmiastową reakcję.
-    if (touchX == 0 && touchY == 0)
-    {
-        vTaskDelay(pdMS_TO_TICKS(10));
-    }
-
-    // <<< TUTAJ DOSYPIEMY BLOKADĘ ANTY-POWRACALNĄ >>>
-    printf("[MENU] Done pressed. Czekam na puszczenie ekranu...\n");
-    wait_for_release();
 }
 //=====================================================================================================
 //=====================================================================================================
@@ -905,292 +695,77 @@ void reset_seconds_to_zero(void)
 //=====================================================================================================
 void set_day_menu(void)
 {
-    uint16_t touchX = 0, touchY = 0;
-    int hold_counter = 0;
-    is_editing_time = true;
     wait_for_release();
-
-    rx8025t_time_t setup_time;
-    if (rx8025t_get_time(&setup_time) != ESP_OK)
+    rx8025t_time_t t;
+    if (rx8025t_get_time(&t) != ESP_OK)
     {
         is_editing_time = false;
         return;
     }
-
-    int full_year = setup_time.year;
-    if (full_year < 2000)
-        full_year += 2000;
-
-    // DYNAMICZNIE USTALAMY MAKSYMALNY DZIEŃ DLA BIEŻĄCEGO MIESIĄCA I ROKU!
-    uint8_t max_days = get_max_days_in_month(full_year, setup_time.month);
-    int current_edit_day = setup_time.day;
-
-    // POPRAWIONO: Dodano jawny indeks [0] do wskaźnika klatki!
-    uint16_t *menu_buffer = (uint16_t *)fbs[0];
-    bool content_changed = true;
-
-    while (is_editing_time)
+    uint8_t max_d = get_max_days_in_month((t.year < 2000) ? t.year + 2000 : t.year, t.month);
+    uint8_t new_d = edit_number_menu("SET DAY", 280, t.day, 1, max_d, false);
+    if (rx8025t_get_time(&t) == ESP_OK)
     {
-        touchX = 0;
-        touchY = 0;
-        if (!touch.getTouch(&touchX, &touchY))
+        t.day = new_d;
+        if (rx8025t_set_time(&t) == ESP_OK)
         {
-            touchX = 0;
-            touchY = 0;
-        }
-
-        if (content_changed)
-        {
-            draw_common_menu_base();
-            draw_text_90(menu_buffer, LCD_H_RES, LCD_V_RES, " SET DAY", 280, 20, 150.0f, 0xFFFF);
-            char txt_current_day[16];
-            snprintf(txt_current_day, sizeof(txt_current_day), "%02d", current_edit_day);
-
-            draw_clock_perfect_monospace_90(menu_buffer, LCD_H_RES, LCD_V_RES, digital_7_ttf, txt_current_day, 470, 250, 220.0f, 0xFFFF);
-            show_debug_touch(touchX, touchY);
-            esp_cache_msync((void *)menu_buffer, BUFFER_SIZE, ESP_CACHE_MSYNC_FLAG_DIR_C2M);
-            xSemaphoreTake(vsync_sem, portMAX_DELAY);
-            lcd.lcd_draw_bitmap(0, 0, LCD_H_RES, LCD_V_RES, (uint8_t *)menu_buffer);
-            content_changed = false;
-        }
-        if (touchX > 0 && touchY > 0)
-        {
-            if (touchX >= 200 && touchX <= 600 && touchY >= 50 && touchY <= 350 &&
-                (hold_counter == 1 || (hold_counter > 500 && hold_counter % 15 == 0)))
-            {
-                current_edit_day = (current_edit_day == 1) ? max_days : current_edit_day - 1;
-                content_changed = true;
-            }
-            else if (touchX >= 200 && touchX <= 600 && touchY >= 950 && touchY <= 1250 &&
-                     (hold_counter == 1 || (hold_counter > 500 && hold_counter % 15 == 0)))
-            {
-                current_edit_day = (current_edit_day == max_days) ? 1 : current_edit_day + 1;
-                content_changed = true;
-            }
-            else if (touchX >= 50 && touchX <= 250 && touchY >= 450 && touchY <= 850)
-            {
-                setup_time.day = current_edit_day;
-
-                if (rx8025t_set_time(&setup_time) == ESP_OK)
-                {
-                    sync_internal_rtc_with_rx8025t();
-                }
-                break;
-            }
-            hold_counter++;
-        }
-        else
-        {
-            hold_counter = 0;
-        }
-        if (touchX == 0 && touchY == 0)
-        {
-            vTaskDelay(pdMS_TO_TICKS(10));
+            sync_internal_rtc_with_rx8025t();
         }
     }
-    printf("[MENU] Done pressed. Czekam na puszczenie ekranu...\n");
-    wait_for_release();
 }
 //=====================================================================================================
 //=====================================================================================================
 //=====================================================================================================
 void set_year_menu(void)
 {
-    uint16_t touchX = 0, touchY = 0;
-    int hold_counter = 0;
-    is_editing_time = true;
-
-    rx8025t_time_t setup_time;
-    if (rx8025t_get_time(&setup_time) != ESP_OK)
+    rx8025t_time_t t;
+    if (rx8025t_get_time(&t) != ESP_OK)
     {
         is_editing_time = false;
         return;
     }
-    // PRZELICZAMY DWUCYFROWY ROK Z RTC NA PEŁNY ROK (NP. 26 -> 2026)
-    // ODCINAMY baze 2000, poniewaz setup_time.year w ESP-IDF ma juz pelna wartosc kalendarzowa!
-    int current_edit_year = setup_time.year;
-    if (current_edit_year < 2000)
+    int start_y = (t.year < 2000) ? t.year + 2000 : t.year;
+    int new_y = edit_number_menu("SET YEAR", 280, start_y, 2026, 2099, true);
+    if (rx8025t_get_time(&t) == ESP_OK)
     {
-        current_edit_year += 2000; // Zabezpieczenie na wypadek surowego rejestru z chipu
-    }
-
-    uint16_t *menu_buffer = (uint16_t *)fbs[0];
-    safe_clear_screen(menu_buffer, 0x0000);
-
-    esp_cache_msync((void *)menu_buffer, BUFFER_SIZE, ESP_CACHE_MSYNC_FLAG_DIR_C2M);
-    bool content_changed = true;
-
-    while (is_editing_time)
-    {
-        touchX = 0;
-        touchY = 0;
-        if (!touch.getTouch(&touchX, &touchY))
+        t.year = new_y;
+        uint8_t max_d = get_max_days_in_month(t.year, t.month);
+        if (t.day > max_d)
         {
-            touchX = 0;
-            touchY = 0;
+            t.day = max_d;
         }
-        //************************************ */
-        if (content_changed)
+        if (rx8025t_set_time(&t) == ESP_OK)
         {
-            draw_common_menu_base();
-            draw_text_90(menu_buffer, LCD_H_RES, LCD_V_RES, " SET YEAR", 280, 20, 150.0f, 0xFFFF);
-
-            // POPRAWIONY BUFOR TEKSTOWY JAKO TABLICA (TERAZ WYŚWIETLI IDEALNIE NP. "2026")
-            char txt_current_year[16];
-            snprintf(txt_current_year, sizeof(txt_current_year), "%04d", current_edit_year);
-
-            // RYSOWANIE ROKU CZCIONKĄ ZMNIEJSZONĄ DO 180.0f DLA LEPSZEGO DOPASOWANIA
-            draw_clock_perfect_monospace_90(menu_buffer, LCD_H_RES, LCD_V_RES, digital_7_ttf, txt_current_year, 350, 250, 180.0f, 0xFFFF);
-
-            show_debug_touch(touchX, touchY);
-
-            esp_cache_msync((void *)menu_buffer, BUFFER_SIZE, ESP_CACHE_MSYNC_FLAG_DIR_C2M);
-            xSemaphoreTake(vsync_sem, portMAX_DELAY);
-            lcd.lcd_draw_bitmap(0, 0, LCD_H_RES, LCD_V_RES, (uint8_t *)menu_buffer);
-            content_changed = false;
-        }
-
-        //******************************* */
-        if (touchX > 0 && touchY > 0)
-        {
-            // OBSŁUGA PRZYCISKU MINUS (ZAKRES OD 2026 ROKU)
-            if (touchX >= 200 && touchX <= 600 && touchY >= 50 && touchY <= 350 &&
-                (hold_counter == 1 || (hold_counter > 500 && hold_counter % 15 == 0)))
-            {
-                current_edit_year = (current_edit_year == 2026) ? 2099 : current_edit_year - 1;
-                content_changed = true;
-            }
-            // OBSŁUGA PRZYCISKU PLUS (ZAKRES DO 2099 ROKU)
-            else if (touchX >= 200 && touchX <= 600 && touchY >= 950 && touchY <= 1250 &&
-                     (hold_counter == 1 || (hold_counter > 500 && hold_counter % 15 == 0)))
-            {
-                current_edit_year = (current_edit_year == 2099) ? 2026 : current_edit_year + 1;
-                content_changed = true;
-            }
-            // OBSŁUGA PRZYCISKU DONE Z WALIDACJĄ I ZAPISEM DO RTC
-            else if (touchX >= 50 && touchX <= 250 && touchY >= 450 && touchY <= 850)
-            {
-                // SPRAWDZAMY CZY DZIEŃ NIE PRZEKRACZA LIMITU DLA NOWEGO ROKU
-                uint8_t max_days = get_max_days_in_month(current_edit_year, setup_time.month);
-                if (setup_time.day > max_days)
-                {
-                    setup_time.day = max_days; // COFAMY DZIEŃ DO KRAWĘDZI (NP. 29 -> 28 LUTY)
-                }
-                setup_time.year = current_edit_year;
-
-                if (rx8025t_set_time(&setup_time) == ESP_OK)
-                {
-                    sync_internal_rtc_with_rx8025t();
-                }
-                break;
-            }
-            hold_counter++;
-        }
-        else
-        {
-            hold_counter = 0;
-        }
-        if (touchX == 0 && touchY == 0)
-        {
-            vTaskDelay(pdMS_TO_TICKS(10));
+            sync_internal_rtc_with_rx8025t();
         }
     }
-    printf("[MENU] Done pressed. Czekam na puszczenie ekranu...\n");
-    wait_for_release();
 }
-
 //=====================================================================================================
 //=====================================================================================================
 //=====================================================================================================
 void set_month_menu(void)
 {
-    uint16_t touchX = 0, touchY = 0;
-    int hold_counter = 0;
-    is_editing_time = true;
     wait_for_release();
-
-    rx8025t_time_t setup_time;
-    if (rx8025t_get_time(&setup_time) != ESP_OK)
+    rx8025t_time_t t;
+    if (rx8025t_get_time(&t) != ESP_OK)
     {
         is_editing_time = false;
         return;
     }
-
-    int current_edit_month = setup_time.month;
-    uint16_t *menu_buffer = (uint16_t *)fbs[0];
-    bool content_changed = true;
-    while (is_editing_time)
+    uint8_t new_m = edit_number_menu("SET MONTH", 280, t.month, 1, 12, false);
+    if (rx8025t_get_time(&t) == ESP_OK)
     {
-        touchX = 0;
-        touchY = 0;
-        if (!touch.getTouch(&touchX, &touchY))
+        t.month = new_m;
+        uint8_t max_d = get_max_days_in_month((t.year < 2000) ? t.year + 2000 : t.year, t.month);
+        if (t.day > max_d)
         {
-            touchX = 0;
-            touchY = 0;
+            t.day = max_d;
         }
-
-        if (content_changed)
+        if (rx8025t_set_time(&t) == ESP_OK)
         {
-            draw_common_menu_base();
-            draw_text_90(menu_buffer, LCD_H_RES, LCD_V_RES, " SET MONTH", 280, 20, 150.0f, 0xFFFF);
-
-            char txt_current_month[16];
-            snprintf(txt_current_month, sizeof(txt_current_month), "%02d", current_edit_month);
-
-            draw_clock_perfect_monospace_90(menu_buffer, LCD_H_RES, LCD_V_RES, digital_7_ttf, txt_current_month, 470, 250, 220.0f, 0xFFFF);
-            show_debug_touch(touchX, touchY);
-            esp_cache_msync((void *)menu_buffer, BUFFER_SIZE, ESP_CACHE_MSYNC_FLAG_DIR_C2M);
-            xSemaphoreTake(vsync_sem, portMAX_DELAY);
-            lcd.lcd_draw_bitmap(0, 0, LCD_H_RES, LCD_V_RES, (uint8_t *)menu_buffer);
-            content_changed = false;
-        }
-        if (touchX > 0 && touchY > 0)
-        {
-            if (touchX >= 200 && touchX <= 600 && touchY >= 50 && touchY <= 350 &&
-                (hold_counter == 1 || (hold_counter > 500 && hold_counter % 15 == 0)))
-            {
-                current_edit_month = (current_edit_month == 1) ? 12 : current_edit_month - 1;
-                content_changed = true;
-            }
-            else if (touchX >= 200 && touchX <= 600 && touchY >= 950 && touchY <= 1250 &&
-                     (hold_counter == 1 || (hold_counter > 500 && hold_counter % 15 == 0)))
-            {
-                current_edit_month = (current_edit_month == 12) ? 1 : current_edit_month + 1;
-                content_changed = true;
-            }
-            else if (touchX >= 50 && touchX <= 250 && touchY >= 450 && touchY <= 850)
-            {
-                // Korekta dni miesiąca oraz zapis do RTC
-                int full_year = setup_time.year;
-                if (full_year < 2000)
-                    full_year += 2000;
-
-                uint8_t max_days = get_max_days_in_month(full_year, current_edit_month);
-                if (setup_time.day > max_days)
-                {
-                    setup_time.day = max_days;
-                }
-
-                setup_time.month = current_edit_month;
-                if (rx8025t_set_time(&setup_time) == ESP_OK)
-                {
-                    sync_internal_rtc_with_rx8025t();
-                }
-                break;
-            }
-            hold_counter++;
-        }
-        else
-        {
-            hold_counter = 0;
-        }
-        if (touchX == 0 && touchY == 0)
-        {
-            vTaskDelay(pdMS_TO_TICKS(10));
+            sync_internal_rtc_with_rx8025t();
         }
     }
-    printf("[MENU] Done pressed. Czekam na puszczenie ekranu...\n");
-    wait_for_release();
 }
 
 //=====================================================================================================
@@ -1292,7 +867,7 @@ void set_light_menu(void)
             // ==========================================
 
             // Wyliczenie szerokości zielonego wypełnienia (1% = 10 pikseli)
-            uint16_t len_draw = current_brightness * 10;
+            uint16_t len_draw = BRIGHTNESS * 10;
 
             // Rysowanie zielonego paska jasności wewnątrz ramki
             draw_rectangle_90(menu_buffer, LCD_H_RES, LCD_V_RES, 141, 351, len_draw, 118, 0x07E0);
@@ -1302,7 +877,7 @@ void set_light_menu(void)
             // ==========================================
             // 4A. Dynamiczny tekst procentowy na środku suwaka (rysowany PO pasku)
             char txt_slider_pct[16];
-            snprintf(txt_slider_pct, sizeof(txt_slider_pct), "%d%%", current_brightness);
+            snprintf(txt_slider_pct, sizeof(txt_slider_pct), "%d%%", BRIGHTNESS);
             // Używamy czcionki tekstowej (systemowej) o rozmiarze 100.0f, wyśrodkowanej w pasku
             draw_text_90(menu_buffer, LCD_H_RES, LCD_V_RES, txt_slider_pct, 600, 360, 100.0f, 0xFFFF);
 
@@ -1323,18 +898,18 @@ void set_light_menu(void)
         {
             if (touchY >= 140 && touchY <= 1140 && touchX >= 347 && touchX <= 473)
             {
-                current_brightness = (touchY - 140) / 10;
-                if (current_brightness > 100)
-                    current_brightness = 100;
-                if (current_brightness < 5)
-                    current_brightness = 5;
-                set_backlight_brightness(current_brightness);
+                BRIGHTNESS = (touchY - 140) / 10;
+                if (BRIGHTNESS > 100)
+                    BRIGHTNESS = 100;
+                if (BRIGHTNESS < 5)
+                    BRIGHTNESS = 5;
+                set_backlight_brightness(BRIGHTNESS);
                 content_changed = true;
-                // printf("[SLIDER] Jasnosc touchY: %d -> %d%%\n", touchY, current_brightness);
+                // printf("[SLIDER] Jasnosc touchY: %d -> %d%%\n", touchY, BRIGHTNESS);
             }
             else if (touchX >= 50 && touchX <= 250 && touchY >= 450 && touchY <= 850)
             {
-                save_brightness_to_NVS(current_brightness);
+                save_brightness_to_NVS(BRIGHTNESS);
                 break;
             }
         }
@@ -1607,17 +1182,84 @@ void vTaskAutoPhotoTimer(void *pvParameters)
 //=====================================================================================================
 //=====================================================================================================
 //=====================================================================================================
+int edit_number_menu(const char *title, int title_x, int start_val, int min_val, int max_val, bool is_year)
+{
+    uint16_t touchX = 0, touchY = 0;
+    int hold_counter = 0, val = start_val;
+    uint16_t *menu_buffer = (uint16_t *)fbs[0]; // dodaj gwiazdke przed menu_buffer i nawiasy z zerem przy fbs
+    safe_clear_screen(menu_buffer, 0x0000);
+    esp_cache_msync(menu_buffer, BUFFER_SIZE, ESP_CACHE_MSYNC_FLAG_DIR_C2M);
+    bool content_changed = true;
+
+    while (is_editing_time)
+    {
+        touchX = 0;
+        touchY = 0;
+        if (!touch.getTouch(&touchX, &touchY))
+        {
+            touchX = 0;
+            touchY = 0;
+        }
+        if (content_changed)
+        {
+            draw_common_menu_base();
+            draw_text_90(menu_buffer, LCD_H_RES, LCD_V_RES, title, title_x, 20, 150.0f, 0xFFFF);
+            char txt_val[16];
+            snprintf(txt_val, sizeof(txt_val), is_year ? "%04d" : "%02d", val);
+            draw_clock_perfect_monospace_90(menu_buffer, LCD_H_RES, LCD_V_RES, digital_7_ttf, txt_val, is_year ? 350 : 470, 250, is_year ? 180.0f : 220.0f, 0xFFFF);
+            show_debug_touch(touchX, touchY);
+
+            esp_cache_msync((void *)menu_buffer, BUFFER_SIZE, ESP_CACHE_MSYNC_FLAG_DIR_C2M);
+            xSemaphoreTake(vsync_sem, portMAX_DELAY);
+            lcd.lcd_draw_bitmap(0, 0, LCD_H_RES, LCD_V_RES, (uint8_t *)fbs[0]);
+            content_changed = false;
+        }
+
+        if (touchX > 0 && touchY > 0)
+        {
+            if (touchX >= 200 && touchX <= 600 && touchY >= 50 && touchY <= 350 && (hold_counter == 1 || (hold_counter > 500 && hold_counter % 15 == 0)))
+            {
+                val = (val <= min_val) ? max_val : val - 1;
+                content_changed = true;
+            }
+
+            else if (touchX >= 200 && touchX <= 600 && touchY >= 950 && touchY <= 1250 && (hold_counter == 1 || (hold_counter > 500 && hold_counter % 15 == 0)))
+            {
+                val = (val >= max_val) ? min_val : val + 1;
+                content_changed = true;
+            }
+            else if (touchX >= 50 && touchX <= 250 && touchY >= 450 && touchY <= 850)
+            {
+                break;
+            }
+
+            hold_counter++;
+        }
+        else
+        {
+            hold_counter = 0;
+        }
+        if (touchX == 0 && touchY == 0)
+        {
+            vTaskDelay(pdMS_TO_TICKS(10));
+        }
+    }
+    wait_for_release();
+    return val;
+}
 
 //=====================================================================================================
 //=====================================================================================================
 //=====================================================================================================
 void wyswietl_jpeg_ze_spiffs(const char *sciezka_pliku)
 {
+    xSemaphoreTake(fb_mutex, portMAX_DELAY);
     printf("[JPEG] Odczyt pliku: %s\n", sciezka_pliku);
     FILE *f = fopen(sciezka_pliku, "rb");
     if (f == NULL)
     {
         printf("[JPEG_ERROR] Nie mozna otworzyc pliku: %s\n", sciezka_pliku);
+        xSemaphoreGive(fb_mutex);
         return;
     }
 
@@ -1633,6 +1275,7 @@ void wyswietl_jpeg_ze_spiffs(const char *sciezka_pliku)
     {
         printf("[JPEG_ERROR] Plik za duzy (%ld B) lub pusty! Limit to 1 MB.\n", file_size);
         fclose(f);
+        xSemaphoreGive(fb_mutex);
         return;
     }
 
@@ -1646,6 +1289,7 @@ void wyswietl_jpeg_ze_spiffs(const char *sciezka_pliku)
     if (read_bytes != (size_t)file_size)
     {
         printf("[JPEG_ERROR] Blad odczytu pliku ze SPIFFS!\n");
+        xSemaphoreGive(fb_mutex);
         return;
     }
 
@@ -1658,6 +1302,7 @@ void wyswietl_jpeg_ze_spiffs(const char *sciezka_pliku)
     if (jpeg_dec_open(&config, &jpeg_dec) != JPEG_ERR_OK)
     {
         printf("[JPEG_ERROR] Nie udalo sie zainicjalizowac dekodera JPEG!\n");
+        xSemaphoreGive(fb_mutex);
         return;
     }
 
@@ -1670,6 +1315,7 @@ void wyswietl_jpeg_ze_spiffs(const char *sciezka_pliku)
     {
         printf("[JPEG_ERROR] Nieprawidlowy naglowek pliku JPEG!\n");
         jpeg_dec_close(jpeg_dec);
+        xSemaphoreGive(fb_mutex);
         return;
     }
 
@@ -1680,6 +1326,7 @@ void wyswietl_jpeg_ze_spiffs(const char *sciezka_pliku)
     {
         printf("[JPEG_ERROR] Blad podczas dekompresji obrazu JPEG!\n");
         jpeg_dec_close(jpeg_dec);
+        xSemaphoreGive(fb_mutex);
         return;
     }
 
@@ -1691,7 +1338,12 @@ void wyswietl_jpeg_ze_spiffs(const char *sciezka_pliku)
     lcd.lcd_draw_bitmap(0, 0, LCD_H_RES, LCD_V_RES, (uint8_t *)fbs[0]);
 
     printf("[JPEG_SUCCESS] Obraz %dx%d zdekompresowany i wyslany na LCD!\n", out_info.width, out_info.height);
+    xSemaphoreGive(fb_mutex);
 }
+
+//=====================================================================================================
+//=====================================================================================================
+//=====================================================================================================
 
 //=====================================================================================================
 //=====================================================================================================

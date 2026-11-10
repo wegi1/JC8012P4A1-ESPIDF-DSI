@@ -39,11 +39,14 @@ extern "C"
 #include "gsl3680_touch.h"
 #include "rx8025t.h"
 }
+extern "C"
+{
+    esp_lcd_panel_handle_t get_my_dsi_handle(void);
+}
 //============================================================================================================
 //============================================================================================================
 //============================================================================================================
-uint8_t BRIGHTNESS = 50;
-
+extern volatile uint8_t BRIGHTNESS;
 //============================================================================================================
 //============================================================================================================
 //============================================================================================================
@@ -121,7 +124,6 @@ void sync_internal_rtc_with_rx8025t(void)
 //============================================================================================================
 //============================================================================================================
 //============================================================================================================
-extern "C" esp_lcd_panel_handle_t get_my_dsi_handle(void);
 
 extern "C" void app_main(void)
 {
@@ -133,6 +135,7 @@ extern "C" void app_main(void)
     printf("[MEM_1] Po LCD (wewnętrzny FB sterownika ulokowany): %u KB wolnego\n", heap_caps_get_free_size(MALLOC_CAP_SPIRAM) / 1024);
     reconfig_pin_bl_to_pwm(); // BL 2 PWM
     set_backlight_brightness(BRIGHTNESS);
+
     //****************************************************************************************** */
     // Inicjalizacja semafora FreeRTOS dla synchronizacji VSYNC
     vsync_sem = xSemaphoreCreateBinary();
@@ -150,7 +153,7 @@ extern "C" void app_main(void)
     esp_lcd_dpi_panel_register_event_callbacks(dpi_handle, &cbs, NULL);
 
     // Alokacja dwóch buforów w PSRAM z wyrównaniem do linii Cache (64 bajty)
-    size_t buffer_size = LCD_H_RES * LCD_V_RES * 3;
+    size_t buffer_size = LCD_H_RES * LCD_V_RES * 3; // + 1MB for jpeg decoding buffer
     fbs[0] = (uint16_t *)heap_caps_aligned_alloc(64, buffer_size, MALLOC_CAP_SPIRAM);
 
     printf("[MEM_2] Po alokacji fbs[0] (Twoje 2MB pobrane): %u KB wolnego\n", heap_caps_get_free_size(MALLOC_CAP_SPIRAM) / 1024);

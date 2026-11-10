@@ -36,3 +36,4 @@ void init_spiffs_storage(void);
 // void wyswietl_jpg_ze_spiffs(const char *sciezka_pliku);
 void vTaskAutoPhotoTimer(void *pvParameters);
 void wyswietl_jpeg_ze_spiffs(const char *sciezka_pliku);
+int edit_number_menu(const char *title, int title_x, int start_val, int min_val, int max_val, bool is_year);
