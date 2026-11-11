@@ -5,6 +5,7 @@ idf_component_register(
         "renderer.cpp"
         "rx8025t.c"
         "wifi_ntp.cpp"
+        "vectordotsball.cpp"
     INCLUDE_DIRS 
         "."
         "fonts"

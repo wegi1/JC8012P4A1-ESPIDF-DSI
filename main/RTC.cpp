@@ -26,6 +26,9 @@
 #include "pins_config.h"
 #include "rx8025t.h"
 #include "wifi_ntp.hpp" // Potrzebne do synchronizacji NTP
+
+#include "vectordotsball.hpp"
+
 //=====================================================================================================
 // Definicje dla kanału PWM
 #define BACKLIGHT_GPIO 23
@@ -1785,6 +1788,9 @@ void set_ntp_and_demo_menu(void)
 void run_vector_dots_demo_loop(void)
 {
     // NEW VECTOR DOTS DEMO
+    wait_for_release();
+    vTaskDelay(pdMS_TO_TICKS(200));
+    start_vectordots_ball();
 }
 //=====================================================================================================
 //=====================================================================================================
