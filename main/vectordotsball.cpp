@@ -9,12 +9,13 @@
 #include "vectordotsball.hpp"
 #include "tables.hpp"
 #include "freertos/FreeRTOS.h"
-#include "freertos/task.h"
+
 #include "freertos/semphr.h"
 #include "esp_cache.h"
 #include "esp_heap_caps.h"
 #include "jd9365_lcd.h"
 
+//==========================================================
 // Zasoby zdefiniowane w main.cpp
 extern jd9365_lcd lcd;
 extern uint16_t *fbs[1];
@@ -57,14 +58,15 @@ static uint32_t FRAME_2_ADDRESS = 0;
 #define zooming ((uint16_t)0x3000)
 #define frames_count 500
 
-#define x_min (2048 - screen_X / 2)
-#define x_max (2048 + screen_X / 2)
+#define x_min (4096 - screen_X / 2)
+#define x_max (4096 + screen_X / 2)
 
-#define y_min (2048 - screen_Y / 2)
-#define y_max (2048 + screen_Y / 2)
+#define y_min (4096 - screen_Y / 2)
+#define y_max (4096 + screen_Y / 2)
 
-#define x_offset (2048 - screen_X / 2)
-#define y_offset (2048 - screen_Y / 2)
+#define x_offset (4096 - screen_X / 2)
+#define y_offset (4096 - screen_Y / 2)
+
 //======================================
 static void zoom_manage(void);
 static void insert_dots(void);
@@ -75,9 +77,16 @@ static void calc_all_dots_02(void);
 //======================================
 
 //---
-uint8_t x_data_valid[4096]; // maximum size calculated dot from - 2048 to 2047
-uint8_t y_data_valid[4096]; // after translate to 2D max values are from 0 to 4095
-uint8_t multable[128][256]; // a prescale table
+typedef uint8_t multable_row_t[256];
+
+static uint8_t *x_data_valid = nullptr;
+static uint8_t *y_data_valid = nullptr;
+static multable_row_t *multable = nullptr;
+
+//===
+// uint8_t x_data_valid[8192]; // maximum size calculated dot from - 2048 to 2047
+// uint8_t y_data_valid[8192]; // after translate to 2D max values are from 0 to 4095
+// uint8_t multable[128][256]; // a prescale table
 int8_t plot_1X[many_plots]; // first buffer many_plots plot X values
 int8_t plot_1Y[many_plots]; // first buffer many_plots plot Y values
 //---
@@ -105,6 +114,8 @@ static uint8_t zoom_side = 0x01;
 static uint8_t zoom = 128; // 128;
 static uint32_t frames = 0;
 
+//=========================================================================================================================================
+
 //=============================================
 static void zoom_manage(void)
 {
@@ -114,18 +125,18 @@ static void zoom_manage(void)
     //====================================================================
     if (frames > frames_count)
     {
-        if ((zoom_scale < 0x6000) && (zoom_side != 0))
+        if ((zoom_scale < 0xC000) && (zoom_side != 0))
         {
-            zoom_scale += 0x0080;
-            if (zoom_scale >= 0x6000)
+            zoom_scale += 0x0180;
+            if (zoom_scale >= 0xC000)
             {
                 zoom_side = 0;
             }
         }
         else
         {
-            zoom_scale -= 0x0080;
-            if (zoom_scale < 0x0080)
+            zoom_scale -= 0x0180;
+            if (zoom_scale < 0x0280)
             {
                 zoom_side = 1;
             }
@@ -141,10 +152,21 @@ static void zoom_manage(void)
 }
 void start_vectordots_ball(void)
 {
-    xSemaphoreTake(fb_mutex, portMAX_DELAY);
+    // xSemaphoreTake(fb_mutex, portMAX_DELAY);
     FRAME_ADDRESS = (uint32_t)fbs[0];
     void *buf2_ptr = heap_caps_aligned_alloc(64, 800 * 1280 * 2, MALLOC_CAP_SPIRAM);
     FRAME_2_ADDRESS = (uint32_t)buf2_ptr;
+
+    if (multable == nullptr)
+    {
+        x_data_valid = (uint8_t *)heap_caps_malloc(8192, MALLOC_CAP_SPIRAM);
+        y_data_valid = (uint8_t *)heap_caps_malloc(8192, MALLOC_CAP_SPIRAM);
+        multable = (multable_row_t *)heap_caps_malloc(128 * 256, MALLOC_CAP_SPIRAM);
+    }
+    // ... reszta funkcji insert_dots() bez zmian ...
+
+    printf("[PSRAM_CHECK] Adres multable: 0x%08" PRIXPTR " (PSRAM zaczyna sie od 0x48000000)\n", (uintptr_t)multable);
+    printf("[PSRAM_CHECK] FRAME_ADDRESS: 0x%08" PRIX32 ", FRAME_2_ADDRESS: 0x%08" PRIX32 "\n", FRAME_ADDRESS, FRAME_2_ADDRESS);
 
     uint32_t i;
 
@@ -164,7 +186,6 @@ void start_vectordots_ball(void)
     plots02[0] = FRAME_2_ADDRESS;
     plots01[0] = FRAME_ADDRESS;
     insert_dots();
-
     while (1)
     {
         //---
@@ -172,7 +193,7 @@ void start_vectordots_ball(void)
         //---
 
         // --- CLEAR OLD PLOTS IN THE 2ND BUFFER WHICH IS NO INVISIBLE ---
-        // AND CACHE CLEAR
+        // --- AND CACHE FLUSH
         for (i = 0; i < pl02_calc; i++)
         {
             *(uint16_t *)(plots02[i]) = 0x0000;
@@ -189,42 +210,30 @@ void start_vectordots_ball(void)
             esp_cache_msync((void *)(plots02[i] & ~63U), 64, ESP_CACHE_MSYNC_FLAG_DIR_C2M);
         }
 
-        if (global_is_touched != false)
+        if (global_is_touched == true)
         {
             for (i = 0; i < (800 * 1280 / 2); i++)
             {
                 pFBaddr[i] = 0; // fill SDRAM layer buffors as black color
             }
 
-            for (i = 0; i < (800 * 1280 / 2); i++)
-            {
-                pFBaddr[i] = 0; // fill SDRAM layer buffors as black color
-            }
             free(buf2_ptr);
             set_backlight_brightness(old_brightness);
-            xSemaphoreGive(fb_mutex);
+            // xSemaphoreGive(fb_mutex);
             wait_for_release();
             refresh_menu_self();
             return;
         }
-
         // esp_cache_msync((void *)FRAME_2_ADDRESS, 800 * 1280 * 2, ESP_CACHE_MSYNC_FLAG_DIR_C2M);
         xSemaphoreTake(vsync_sem, portMAX_DELAY);
         lcd.lcd_draw_bitmap(0, 0, 800, 1280, (uint8_t *)FRAME_2_ADDRESS);
-
-        // --- WAIT FOR END OF FRAME ---
-        // while (((uint32_t)FRAME_2_ADDRESS) != LTDC_Layer1->CFBAR)
-        ;
 
         //---
         zoom_manage();
         //---
 
         // --- CLEAR OLD PLOTS IN THE 1st BUFFER WHICH IS NO INVISIBLE ---
-        // for (i = 0; i < pl01_calc; i++)
-        // {
-        //     *(uint16_t *)(plots01[i]) = (uint16_t)0x0000;
-        // }
+        // --- AND CACHE FLUSH
         for (i = 0; i < pl01_calc; i++)
         {
             *(uint16_t *)(plots01[i]) = 0x0000;
@@ -233,33 +242,22 @@ void start_vectordots_ball(void)
 
         calculate_matrix();
         calculate_8_dots();
-        calc_all_dots_02(); // store plots values in first buffer
-                            // for (i = 0; i < pl01_calc; i++)
-                            // {
-                            //     *(uint16_t *)(plots01[i]) = (uint16_t)0xFFFF;
-                            // }
+        // store plots values in first buffer
+        calc_all_dots_02();
         for (i = 0; i < pl01_calc; i++)
         {
             *(uint16_t *)(plots01[i]) = 0xFFFF;
             esp_cache_msync((void *)(plots01[i] & ~63U), 64, ESP_CACHE_MSYNC_FLAG_DIR_C2M);
         }
-
-        // change layer address from new frame
-        // LTDC_Layer1->CFBAR = FRAME_ADDRESS;
-        // LTDC->SRCR = LTDC_SRCR_VBR; // or LTDC_SRCR_IMR for immediatelly change
         // esp_cache_msync((void *)FRAME_ADDRESS, 800 * 1280 * 2, ESP_CACHE_MSYNC_FLAG_DIR_C2M);
         xSemaphoreTake(vsync_sem, portMAX_DELAY);
         lcd.lcd_draw_bitmap(0, 0, 800, 1280, (uint8_t *)FRAME_ADDRESS);
-
-        // --- WAIT FOR END OF FRAME ---
-        // while (((uint32_t)FRAME_ADDRESS) != LTDC_Layer1->CFBAR)
-        ;
-        //---
     }
 }
 //=======================================================================
 void insert_dots()
 {
+
     uint8_t i, i2, i3, dana, t9, t10, sx, sy;
     uint8_t t_x;
     uint16_t wynik, x;
@@ -280,7 +278,7 @@ void insert_dots()
         dana = dana + 2;
     }
     //*************************************************
-    for (x = 0; x < 4096; x++)
+    for (x = 0; x < 8192; x++)
     {
         x_data_valid[x] = 0;
         y_data_valid[x] = 0;
@@ -454,8 +452,8 @@ void calc_all_dots_01(void)
         plot_16X = data1 >> 16;
         data1 = plot_16Y * zoom_scale;
         plot_16Y = data1 >> 16;
-        plot_16X += 2048;
-        plot_16Y += 2048;
+        plot_16X += 4096;
+        plot_16Y += 4096;
 
         // validate pixel range
         if ((x_data_valid[plot_16X] | y_data_valid[plot_16Y]) == 0x03)
@@ -515,8 +513,8 @@ void calc_all_dots_02(void)
         plot_16X = data1 >> 16;
         data1 = plot_16Y * zoom_scale;
         plot_16Y = data1 >> 16;
-        plot_16X += 2048;
-        plot_16Y += 2048;
+        plot_16X += 4096;
+        plot_16Y += 4096;
 
         // validate pixel range
         if ((x_data_valid[plot_16X] | y_data_valid[plot_16Y]) == 0x03)

@@ -376,30 +376,29 @@ void init_RTC_subsystem(void)
     // Wygaszamy ekran na start, zanim pokażemy zdjęcie
     ledc_set_duty(BACKLIGHT_LEDC_MODE, BACKLIGHT_LEDC_CHANNEL, 0);
     ledc_update_duty(BACKLIGHT_LEDC_MODE, BACKLIGHT_LEDC_CHANNEL);
-    // !!! ZABLOKOWANIE WYŚWIETLANIA PIERWSZEGO ZDJECIA NA RAZIE - PO SKONCZENIU ODBLOKOWAC
-    // ============================================================================================
-    // wyswietl_jpeg_ze_spiffs("/spiffs/FOTO1.jpg");
-    // for (int t = 0; t <= 100; t++)
-    // {
-    //     duty = (t * 1023) / 100;
-    //     ledc_set_duty(BACKLIGHT_LEDC_MODE, BACKLIGHT_LEDC_CHANNEL, duty);
-    //     ledc_update_duty(BACKLIGHT_LEDC_MODE, BACKLIGHT_LEDC_CHANNEL);
-    //     vTaskDelay(pdMS_TO_TICKS(20));
-    // }
-    // vTaskDelay(pdMS_TO_TICKS(5000)); // Pokazuj zdjęcie przez 3 sekundy, zanim wystartuje główny zegar!
 
-    // for (int t = 100; t >= 0; t--)
-    // {
-    //     duty = (t * 1023) / 100;
-    //     ledc_set_duty(BACKLIGHT_LEDC_MODE, BACKLIGHT_LEDC_CHANNEL, duty);
-    //     ledc_update_duty(BACKLIGHT_LEDC_MODE, BACKLIGHT_LEDC_CHANNEL);
-    //     vTaskDelay(pdMS_TO_TICKS(50));
-    // }
-    // safe_clear_screen(fbs[0], 0x0000);
-    // esp_cache_msync((void *)fbs[0], BUFFER_SIZE, ESP_CACHE_MSYNC_FLAG_DIR_C2M);
-    // xSemaphoreTake(vsync_sem, portMAX_DELAY);
-    // lcd.lcd_draw_bitmap(0, 0, LCD_H_RES, LCD_V_RES, (uint8_t *)fbs[0]);
-    // vTaskDelay(pdMS_TO_TICKS(500));
+    wyswietl_jpeg_ze_spiffs("/spiffs/FOTO1.jpg");
+    for (int t = 0; t <= 100; t++)
+    {
+        duty = (t * 1023) / 100;
+        ledc_set_duty(BACKLIGHT_LEDC_MODE, BACKLIGHT_LEDC_CHANNEL, duty);
+        ledc_update_duty(BACKLIGHT_LEDC_MODE, BACKLIGHT_LEDC_CHANNEL);
+        vTaskDelay(pdMS_TO_TICKS(20));
+    }
+    vTaskDelay(pdMS_TO_TICKS(5000)); // Pokazuj zdjęcie przez 3 sekundy, zanim wystartuje główny zegar!
+
+    for (int t = 100; t >= 0; t--)
+    {
+        duty = (t * 1023) / 100;
+        ledc_set_duty(BACKLIGHT_LEDC_MODE, BACKLIGHT_LEDC_CHANNEL, duty);
+        ledc_update_duty(BACKLIGHT_LEDC_MODE, BACKLIGHT_LEDC_CHANNEL);
+        vTaskDelay(pdMS_TO_TICKS(50));
+    }
+    safe_clear_screen(fbs[0], 0x0000);
+    esp_cache_msync((void *)fbs[0], BUFFER_SIZE, ESP_CACHE_MSYNC_FLAG_DIR_C2M);
+    xSemaphoreTake(vsync_sem, portMAX_DELAY);
+    lcd.lcd_draw_bitmap(0, 0, LCD_H_RES, LCD_V_RES, (uint8_t *)fbs[0]);
+    vTaskDelay(pdMS_TO_TICKS(500));
     BRIGHTNESS = load_brightness_from_NVS(); // Wczytanie starej jasności
 
     xTaskCreate(vTaskAutoPhotoTimer, "vTaskAutoPhoto", 2048, NULL, 2, NULL);
@@ -1018,7 +1017,7 @@ void set_light_menu(void)
                 content_changed = true;
                 // printf("[SLIDER] Jasnosc touchY: %d -> %d%%\n", touchY, BRIGHTNESS);
             }
-            else if (touchX >= 50 && touchX <= 250 && touchY >= 450 && touchY <= 850)
+            else if (touchX >= 80 && touchX <= 200 && touchY >= 400 && touchY <= 900)
             {
                 save_brightness_to_NVS(BRIGHTNESS);
                 break;
@@ -1674,7 +1673,7 @@ void set_ntp_menu(void)
             }
 
             // 2. HIT-BOX dla przycisku DONE (Ramka Y=600, wysokość 120 -> ty od ok. 600 do 750)
-            if (tx >= 50 && tx <= 250 && ty >= 600 && ty <= 750)
+            if (tx >= 80 && tx <= 200 && ty >= 400 && ty <= 900)
             {
                 printf("[MENU NTP] -> Kliknięto DONE. Powrót do zegara.\n");
                 wait_for_release(); // Czekamy na puszczenie ekranu przed wyjściem z menu, aby uniknąć natychmiastowego wyzwolenia przycisku
@@ -1712,8 +1711,8 @@ void refresh_menu_self(void)
     draw_hollow_rectangle_90(menu_buffer, LCD_H_RES, LCD_V_RES, 0, 0, 1276, 400, 4, 0xFFFF);
     draw_hollow_rectangle_90(menu_buffer, LCD_H_RES, LCD_V_RES, 70, 140, 500, 120, 4, 0x07E0);
     draw_text_90(menu_buffer, LCD_H_RES, LCD_V_RES, "NTP", 270, 150, 100.0f, 0x07E0);
-    draw_hollow_rectangle_90(menu_buffer, LCD_H_RES, LCD_V_RES, 710, 140, 500, 120, 4, 0x001F);
-    draw_text_90(menu_buffer, LCD_H_RES, LCD_V_RES, "DEMO", 890, 150, 100.0f, 0x001F);
+    draw_hollow_rectangle_90(menu_buffer, LCD_H_RES, LCD_V_RES, 710, 140, 500, 120, 4, 0xF100);
+    draw_text_90(menu_buffer, LCD_H_RES, LCD_V_RES, "DEMO", 890, 150, 100.0f, 0xF100);
     draw_hollow_rectangle_90(menu_buffer, LCD_H_RES, LCD_V_RES, 390, 600, 500, 120, 4, 0xFFFF);
     draw_text_90(menu_buffer, LCD_H_RES, LCD_V_RES, "DONE", 510, 580, 150.0f, 0xFFFF);
     esp_cache_msync(fbs[0], 800 * 1280 * 2, ESP_CACHE_MSYNC_FLAG_DIR_C2M);
@@ -1767,7 +1766,7 @@ void set_ntp_and_demo_menu(void)
                 run_vector_dots_demo_loop();
             }
             // Obsluga przycisku DONE (wyjscie na dolnym pasku)
-            if (tx >= 50 && tx <= 250 && ty >= 600 && ty <= 750)
+            if (tx >= 80 && tx <= 200 && ty >= 400 && ty <= 900)
             {
                 printf("[MENU NTP] -> Kliknieto DONE. Powrot.\n");
                 exit_menu = true;
