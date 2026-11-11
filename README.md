@@ -1,3 +1,4 @@
+![JC8012P4A1_RTC_CLOCK](/PICTURES/clock.jpg)
 # Project JC8012P4A1 - ESP32-P4 Clock Panel (MIPI-DSI & ESP32-C6)
 
 ---
