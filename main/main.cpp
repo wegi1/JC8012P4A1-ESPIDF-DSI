@@ -28,7 +28,7 @@
 #include "esp_lcd_mipi_dsi.h"
 #include "RTC.hpp"
 #include "driver/i2c.h" // Potrzebne do konfiguracji magistrali
-
+#include "wifi_ntp.hpp" // Potrzebne do synchronizacji NTP
 //============================================================================================================
 //============================================================================================================
 //============================================================================================================
@@ -129,6 +129,9 @@ extern "C" void app_main(void)
 {
     init_NVS_system();                       // Inicjalizacja flasha pod NVS
     BRIGHTNESS = load_brightness_from_NVS(); // Wczytanie starej jasności
+    // Polska strefa czasowa (automatyczna zmiana czasu letniego/zimowego)
+    setenv("TZ", "CET-1CEST,M3.5.0,M10.5.0/3", 1);
+    tzset();
 
     printf("[MEM_0] Przed LCD: %u KB wolnego\n", heap_caps_get_free_size(MALLOC_CAP_SPIRAM) / 1024);
     lcd.begin();
@@ -196,9 +199,9 @@ extern "C" void app_main(void)
     rx8025t_init();
     sync_internal_rtc_with_rx8025t(); // <<< WYWOŁUJEMY RAZ PO RESECIE
 
-    init_RTC_subsystem();
-
+    print_internal_ram_stats("PRZED INICJALIZACJĄ ZADAŃ RTC [init_RTC_subsystem();]");
     //============================================================================================================
+    init_RTC_subsystem();
 
     // Pętla główna Double Bufferingu
     while (1)

@@ -1,6 +1,7 @@
 #pragma once
 
 #include <stdint.h>
+#include <stddef.h>
 
 void sync_internal_rtc_with_rx8025t(void);
 void init_RTC_subsystem(void); // Nowa funkcja inicjalizująca zadania RTC
@@ -37,3 +38,12 @@ void init_spiffs_storage(void);
 void vTaskAutoPhotoTimer(void *pvParameters);
 void wyswietl_jpeg_ze_spiffs(const char *sciezka_pliku);
 int edit_number_menu(const char *title, int title_x, int start_val, int min_val, int max_val, bool is_year);
+void save_wifi_credentials_to_NVS(const char *ssid, const char *password);
+bool load_wifi_credentials_from_NVS(char *ssid_out, size_t ssid_max_len, char *pass_out, size_t pass_max_len);
+void print_internal_ram_stats(const char *etap);
+void vTaskNtpSyncWorker(void *pvParameters);
+void set_ntp_menu(void);
+void vTaskHardwareTouchDriver(void *pvParameters);
+void set_ntp_and_demo_menu(void);
+void run_vector_dots_demo_loop(void);
+void refresh_menu_self(void);

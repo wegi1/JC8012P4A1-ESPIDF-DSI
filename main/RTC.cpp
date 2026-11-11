@@ -25,6 +25,7 @@
 #include "gsl3680_touch.h"
 #include "pins_config.h"
 #include "rx8025t.h"
+#include "wifi_ntp.hpp" // Potrzebne do synchronizacji NTP
 //=====================================================================================================
 // Definicje dla kanału PWM
 #define BACKLIGHT_GPIO 23
@@ -47,6 +48,7 @@ extern SemaphoreHandle_t vsync_sem;
 TaskHandle_t hTaskDisableColon = NULL;
 TaskHandle_t hTaskTouch = NULL; // Uchwyt do zadania dotyku
 TaskHandle_t hTaskMenuEngine = NULL;
+TaskHandle_t hTaskHardwareTouchDriver = NULL;
 
 static const size_t BUFFER_SIZE = LCD_H_RES * LCD_V_RES * sizeof(uint16_t);
 
@@ -68,6 +70,10 @@ volatile int PHOTO_NR = 0;    // Zmienna globalna do przechowywania numeru aktua
 static int old_seconds = 111; // Zmienna do filtrowania zbocza sekundy (Edge Detection)
 
 SemaphoreHandle_t fb_mutex = NULL;
+volatile uint16_t global_touchX = 0;
+volatile uint16_t global_touchY = 0;
+volatile bool global_is_touched = false;
+
 //=====================================================================================================
 //=====================================================================================================
 //=====================================================================================================
@@ -110,6 +116,36 @@ void vTaskDisableColon(void *pvParameters)
         xSemaphoreGive(fb_mutex);
         // rtc_end = esp_timer_get_time();
         // printf("[PROFILER] RENDER COLON (vTaskDisableColon) zajął: %llu us\n", (rtc_end - rtc_start));
+    }
+}
+//=====================================================================================================
+//=====================================================================================================
+//=====================================================================================================
+void vTaskHardwareTouchDriver(void *pvParameters)
+{
+    printf("[DRIVER] Niskopoziomowy wątek sprzętowy I2C (vTaskHardwareTouchDriver) uruchomiony.\n");
+
+    while (1)
+    {
+        uint16_t tx = 0;
+        uint16_t ty = 0;
+
+        // Bezpośrednie próbkowanie kontrolera dotyku na szynie I2C
+        if (touch.getTouch(&tx, &ty))
+        {
+            global_touchX = tx;
+            global_touchY = ty;
+            global_is_touched = true;
+        }
+        else
+        {
+            global_touchX = 0;
+            global_touchY = 0;
+            global_is_touched = false;
+        }
+
+        // Próbkowanie 50Hz (co 20ms) - idealne dla płynnego interfejsu
+        vTaskDelay(pdMS_TO_TICKS(20));
     }
 }
 //=====================================================================================================
@@ -226,6 +262,19 @@ void vTaskTouch(void *pvParameters)
                 }
                 old_seconds = 111;
             }
+            // --- NTP --- HIT-BOX: WEJŚCIE DO MENU RĘCZNEJ SYNCHRONIZACJI NTP (Pasek stanu na dole) ---
+            if (touchX >= 150 && touchX <= 260 && touchY >= 400 && touchY <= 1279)
+            {
+                printf("[TOUCH] -> Kliknięcie w pasek stanu! Uruchamiam Menu NTP...\n");
+                if (hTaskMenuEngine != NULL)
+                {
+                    is_editing_time = true;
+                    xTaskNotify(hTaskMenuEngine, 7, eSetValueWithOverwrite); // Wybudzamy MenuEngine wartością 7
+                    vTaskSuspend(NULL);                                      // Samozawieszenie wątku dotyku
+                }
+                old_seconds = 111;
+            }
+
             // Sprzętowy anty-rebound (Debouncing)
             vTaskDelay(pdMS_TO_TICKS(250));
         }
@@ -288,7 +337,6 @@ void vTaskTouch(void *pvParameters)
         vTaskDelay(pdMS_TO_TICKS(20));
     }
 }
-
 //=====================================================================================================
 //=====================================================================================================
 //=====================================================================================================
@@ -296,6 +344,26 @@ void vTaskTouch(void *pvParameters)
 void init_RTC_subsystem(void)
 {
     uint32_t duty;
+    // save_wifi_credentials_to_NVS("SSID", "Password"); // Zapisz dane Wi-Fi do NVS (tylko raz, jeśli nie zapisano wcześniej)
+    char test_ssid[33] = {0};
+    char test_pass[65] = {0};
+    // Tworzenie wątku na rdzeniu 1 (peryferyjnym)
+    xTaskCreatePinnedToCore(vTaskHardwareTouchDriver, "vTaskHwTouch", 4096, NULL, 3, &hTaskHardwareTouchDriver, 1);
+    // Usypiamy go na starcie - obudzą go dopiero procedury menu jasności lub NTP
+    if (hTaskHardwareTouchDriver != NULL)
+    {
+        vTaskSuspend(hTaskHardwareTouchDriver);
+    }
+
+    if (load_wifi_credentials_from_NVS(test_ssid, sizeof(test_ssid), test_pass, sizeof(test_pass)))
+    {
+        printf("[NVS_TEST] SUKCES! Odczytano z NVS -> SSID oraz HASLO");
+    }
+    else
+    {
+        printf("[NVS_TEST] BLAD! Brak danych w NVS.\n");
+    }
+
     // NOWOŚĆ: Montujemy dysk zanim ruszą zadania FreeRTOS
     init_spiffs_storage();
     fb_mutex = xSemaphoreCreateMutex();
@@ -304,29 +372,30 @@ void init_RTC_subsystem(void)
     // Wygaszamy ekran na start, zanim pokażemy zdjęcie
     ledc_set_duty(BACKLIGHT_LEDC_MODE, BACKLIGHT_LEDC_CHANNEL, 0);
     ledc_update_duty(BACKLIGHT_LEDC_MODE, BACKLIGHT_LEDC_CHANNEL);
+    // !!! ZABLOKOWANIE WYŚWIETLANIA PIERWSZEGO ZDJECIA NA RAZIE - PO SKONCZENIU ODBLOKOWAC
+    // ============================================================================================
+    // wyswietl_jpeg_ze_spiffs("/spiffs/FOTO1.jpg");
+    // for (int t = 0; t <= 100; t++)
+    // {
+    //     duty = (t * 1023) / 100;
+    //     ledc_set_duty(BACKLIGHT_LEDC_MODE, BACKLIGHT_LEDC_CHANNEL, duty);
+    //     ledc_update_duty(BACKLIGHT_LEDC_MODE, BACKLIGHT_LEDC_CHANNEL);
+    //     vTaskDelay(pdMS_TO_TICKS(20));
+    // }
+    // vTaskDelay(pdMS_TO_TICKS(5000)); // Pokazuj zdjęcie przez 3 sekundy, zanim wystartuje główny zegar!
 
-    wyswietl_jpeg_ze_spiffs("/spiffs/FOTO1.jpg");
-    for (int t = 0; t <= 100; t++)
-    {
-        duty = (t * 1023) / 100;
-        ledc_set_duty(BACKLIGHT_LEDC_MODE, BACKLIGHT_LEDC_CHANNEL, duty);
-        ledc_update_duty(BACKLIGHT_LEDC_MODE, BACKLIGHT_LEDC_CHANNEL);
-        vTaskDelay(pdMS_TO_TICKS(20));
-    }
-    vTaskDelay(pdMS_TO_TICKS(5000)); // Pokazuj zdjęcie przez 3 sekundy, zanim wystartuje główny zegar!
-
-    for (int t = 100; t >= 0; t--)
-    {
-        duty = (t * 1023) / 100;
-        ledc_set_duty(BACKLIGHT_LEDC_MODE, BACKLIGHT_LEDC_CHANNEL, duty);
-        ledc_update_duty(BACKLIGHT_LEDC_MODE, BACKLIGHT_LEDC_CHANNEL);
-        vTaskDelay(pdMS_TO_TICKS(50));
-    }
-    safe_clear_screen(fbs[0], 0x0000);
-    esp_cache_msync((void *)fbs[0], BUFFER_SIZE, ESP_CACHE_MSYNC_FLAG_DIR_C2M);
-    xSemaphoreTake(vsync_sem, portMAX_DELAY);
-    lcd.lcd_draw_bitmap(0, 0, LCD_H_RES, LCD_V_RES, (uint8_t *)fbs[0]);
-    vTaskDelay(pdMS_TO_TICKS(500));
+    // for (int t = 100; t >= 0; t--)
+    // {
+    //     duty = (t * 1023) / 100;
+    //     ledc_set_duty(BACKLIGHT_LEDC_MODE, BACKLIGHT_LEDC_CHANNEL, duty);
+    //     ledc_update_duty(BACKLIGHT_LEDC_MODE, BACKLIGHT_LEDC_CHANNEL);
+    //     vTaskDelay(pdMS_TO_TICKS(50));
+    // }
+    // safe_clear_screen(fbs[0], 0x0000);
+    // esp_cache_msync((void *)fbs[0], BUFFER_SIZE, ESP_CACHE_MSYNC_FLAG_DIR_C2M);
+    // xSemaphoreTake(vsync_sem, portMAX_DELAY);
+    // lcd.lcd_draw_bitmap(0, 0, LCD_H_RES, LCD_V_RES, (uint8_t *)fbs[0]);
+    // vTaskDelay(pdMS_TO_TICKS(500));
     BRIGHTNESS = load_brightness_from_NVS(); // Wczytanie starej jasności
 
     xTaskCreate(vTaskAutoPhotoTimer, "vTaskAutoPhoto", 2048, NULL, 2, NULL);
@@ -341,7 +410,20 @@ void init_RTC_subsystem(void)
     xTaskCreate(vTaskMenuEngine, "vTaskMenuEngine", 4096, NULL, 4, &hTaskMenuEngine);
 
     printf("[LOG] Podsystem RTC: Zadania mrugania i dotyku zostały pomyślnie zarejestrowane.\n");
-    xTaskCreate(vTaskFourHourIncrementer, "vTask4hInc", 2048, NULL, 2, NULL);
+
+    // Uruchomienie cyklicznego automatu synchronizacji NTP (raz na dobę / co 4 godziny)
+    // Przypinamy go do rdzenia 1 (ekran działa na rdzeniu 0), dajemy 4096 B stosu i priorytet 2
+    BaseType_t xReturned4h = xTaskCreatePinnedToCore(
+        vTaskFourHourIncrementer, "Task4hNtp", 4096, NULL, 2, NULL, 1);
+
+    if (xReturned4h == pdPASS)
+    {
+        printf("[LOG] Podsystem RTC: Licznik 4h / 24h NTP został zarejestrowany pomyślnie.\n");
+    }
+    else
+    {
+        printf("[ERROR] Błąd uruchomienia vTaskFourHourIncrementer!\n");
+    }
 
     printf("[LOG] Podsystem RTC: Licznik 4h został zarejestrowany.\n");
 
@@ -484,12 +566,26 @@ void set_minutes_menu(void)
 //=====================================================================================================
 void wait_for_release(void)
 {
-    uint16_t dummyX = 0;
-    uint16_t dummyY = 0;
-    // Dopóki getTouch zwraca true (ekran wciśnięty), czekaj
-    while ((touch.getTouch(&dummyX, &dummyY)) == true)
+    // Sprawdzamy stan wątku sprzętowego w tle
+    eTaskState state = eTaskGetState(hTaskHardwareTouchDriver);
+
+    // Jeśli wątek sprzętowy NIE jest zawieszony (czyli działa i sam odpytuje I2C)
+    if (state != eSuspended && state != eDeleted)
     {
-        vTaskDelay(pdMS_TO_TICKS(15));
+        // Poziom 2: Bezpiecznie czekamy na flagę w pamięci RAM
+        while (global_is_touched == true)
+        {
+            vTaskDelay(pdMS_TO_TICKS(15));
+        }
+    }
+    else
+    {
+        // Poziom 1: Driver w tle śpi, więc główny wątek może bezpiecznie odpytać I2C
+        uint16_t dummyX = 0, dummyY = 0;
+        while (touch.getTouch(&dummyX, &dummyY) == true)
+        {
+            vTaskDelay(pdMS_TO_TICKS(15));
+        }
     }
 }
 
@@ -514,7 +610,7 @@ void show_debug_touch(uint16_t touchX, uint16_t touchY)
 {
     uint16_t *menu_buffer = (uint16_t *)fbs[0];
     char txt_debug_touch[32];
-    snprintf(txt_debug_touch, sizeof(txt_debug_touch), "X:%03d Y:%03d", touchX, touchY);
+    snprintf(txt_debug_touch, sizeof(txt_debug_touch), "X:%03d Y:%04d", touchX, touchY);
     draw_clock_perfect_monospace_90(menu_buffer, LCD_H_RES, LCD_V_RES, digital_7_ttf, txt_debug_touch, 10, 10, 30.0f, 0x07E0);
 }
 //=====================================================================================================
@@ -571,9 +667,14 @@ void vTaskMenuEngine(void *pvParameters)
         {
             set_month_menu();
         }
-        else if (menu_choice == 6) // NOWOŚĆ: POWIADOMIENIE NR 6
+        else if (menu_choice == 6) // USTAWIENIE ROKU
         {
             set_year_menu();
+        }
+        else if (menu_choice == 7) // NOWOŚĆ: WYWOŁANIE MENU NTP
+        {
+            set_ntp_and_demo_menu();
+            // set_ntp_menu();
         }
 
         // --- KLUCZOWY FIX PO WCIŚNIĘCIU DONE ---
@@ -833,12 +934,11 @@ void set_light_menu(void)
     uint16_t touchX = 0;
     uint16_t touchY = 0;
     uint16_t *menu_buffer = (uint16_t *)fbs[0];
-    safe_clear_screen(menu_buffer, 0x0000);
-    esp_cache_msync((void *)menu_buffer, BUFFER_SIZE, ESP_CACHE_MSYNC_FLAG_DIR_C2M);
     bool content_changed = true;
 
-    // 1. Czyszczenie bufora na czarno (czysta karta pod nową klatkę menu)
     safe_clear_screen(menu_buffer, 0x0000);
+    esp_cache_msync((void *)menu_buffer, BUFFER_SIZE, ESP_CACHE_MSYNC_FLAG_DIR_C2M);
+    // xSemaphoreTake(vsync_sem, portMAX_DELAY);
 
     // 2. To ZOSTAJE: Napis nagłówkowy menu
     draw_text_90(menu_buffer, LCD_H_RES, LCD_V_RES, " SET LIGHT", 300, 20, 150.0f, 0xFFFF);
@@ -848,6 +948,11 @@ void set_light_menu(void)
     draw_hollow_rectangle_90(menu_buffer, LCD_H_RES, LCD_V_RES, 390, 600, 500, 120, 4, 0xFFFF);
     // Rysowanie zewnętrznej ramki suwaka (szerokość 1000, wysokość 120, na Y = 350)
     draw_hollow_rectangle_90(menu_buffer, LCD_H_RES, LCD_V_RES, 132, 342, 1018, 136, 4, 0xFFFF);
+
+    esp_cache_msync((void *)menu_buffer, BUFFER_SIZE, ESP_CACHE_MSYNC_FLAG_DIR_C2M);
+    xSemaphoreTake(vsync_sem, portMAX_DELAY);
+    lcd.lcd_draw_bitmap(0, 0, LCD_H_RES, LCD_V_RES, (uint8_t *)menu_buffer);
+    vTaskDelay(pdMS_TO_TICKS(10)); // Dajemy czas na fizyczne przemieszczenie kontrolera i zdejmujemy blokadę czasu
 
     while (1)
     {
@@ -861,7 +966,7 @@ void set_light_menu(void)
 
         if (content_changed == true)
         {
-
+            xSemaphoreTake(fb_mutex, portMAX_DELAY);
             // ==========================================
             // TUTAJ WSTAWIASZ NOWĄ PACZKĘ 1 (RYSOWANIE SUWAKA):
             // ==========================================
@@ -882,6 +987,7 @@ void set_light_menu(void)
             draw_text_90(menu_buffer, LCD_H_RES, LCD_V_RES, txt_slider_pct, 600, 360, 100.0f, 0xFFFF);
 
             // 5. To ZOSTAJE: Rysowanie debugowania pozycji dotyku
+            draw_rectangle_90(menu_buffer, LCD_H_RES, LCD_V_RES, 10, 10, 300, 35, 0x0000);
             show_debug_touch(touchX, touchY);
 
             // 6. To ZOSTAJE: Synchronizacja Cache i wypchnięcie klatki przez DMA na MIPI-DSI
@@ -890,6 +996,7 @@ void set_light_menu(void)
             lcd.lcd_draw_bitmap(0, 0, LCD_H_RES, LCD_V_RES, (uint8_t *)menu_buffer);
 
             content_changed = false;
+            xSemaphoreGive(fb_mutex);
         }
         // =========================================================================
         // OBSŁUGA DOTYKU I SUWAKA (Kopiuj od tego miejsca aż do samego końca funkcji)
@@ -1072,32 +1179,6 @@ uint8_t get_max_days_in_month(int year, uint8_t month)
 //=====================================================================================================
 //=====================================================================================================
 //=====================================================================================================
-void vTaskFourHourIncrementer(void *pvParameters)
-{
-    // Dla testu: 1 minuta (FreeRTOS sam przeliczy to na ticki zależnie od Hz systemu)
-    const TickType_t xIncrementInterval = pdMS_TO_TICKS(4 * 60 * 60 * 1000);
-
-    // Zmienna MUSI być zainicjalizowana aktualnym czasem przed pętlą
-    TickType_t xLastWakeTime = xTaskGetTickCount();
-
-    printf("[SYSTEM] Zadanie inkrementacji co 4 godziny wystartowało.\n");
-
-    while (1)
-    {
-        // Pierwszy argument przekazujemy przez wskaźnik – FreeRTOS sam go zaktualizuje o wartość xIncrementInterval
-        vTaskDelayUntil(&xLastWakeTime, xIncrementInterval);
-
-        // Sekcja inkrementacji zmiennej
-        g_my_4h_counter = g_my_4h_counter + 1;
-
-        // Log do konsoli ESP
-        ESP_LOGI("TIMER_TASK", "Minęły 4h. Licznik globalny: %lu", g_my_4h_counter);
-    }
-}
-//=====================================================================================================
-//=====================================================================================================
-//=====================================================================================================
-
 void init_spiffs_storage(void)
 {
     printf("[SPIFFS] Inicjalizacja i montowanie partycji 'storage'...\n");
@@ -1184,6 +1265,9 @@ void vTaskAutoPhotoTimer(void *pvParameters)
 //=====================================================================================================
 int edit_number_menu(const char *title, int title_x, int start_val, int min_val, int max_val, bool is_year)
 {
+    uint16_t old_touchX = 9999;
+    uint16_t old_touchY = 9999;
+
     uint16_t touchX = 0, touchY = 0;
     int hold_counter = 0, val = start_val;
     uint16_t *menu_buffer = (uint16_t *)fbs[0]; // dodaj gwiazdke przed menu_buffer i nawiasy z zerem przy fbs
@@ -1191,24 +1275,27 @@ int edit_number_menu(const char *title, int title_x, int start_val, int min_val,
     esp_cache_msync(menu_buffer, BUFFER_SIZE, ESP_CACHE_MSYNC_FLAG_DIR_C2M);
     bool content_changed = true;
 
+    draw_common_menu_base();
+    draw_text_90(menu_buffer, LCD_H_RES, LCD_V_RES, title, title_x, 20, 150.0f, 0xFFFF);
+    global_is_touched = false;
+    global_touchX = 0;
+    global_touchY = 0;
+    vTaskResume(hTaskHardwareTouchDriver);
+
+    wait_for_release();
+    vTaskDelay(pdMS_TO_TICKS(100)); // Dajemy czas na fizyczne przemieszczenie kontrolera i zdejmujemy blokadę czasu
+
     while (is_editing_time)
     {
-        touchX = 0;
-        touchY = 0;
-        if (!touch.getTouch(&touchX, &touchY))
-        {
-            touchX = 0;
-            touchY = 0;
-        }
+        touchX = global_touchX;
+        touchY = global_touchY;
+
         if (content_changed)
         {
-            draw_common_menu_base();
-            draw_text_90(menu_buffer, LCD_H_RES, LCD_V_RES, title, title_x, 20, 150.0f, 0xFFFF);
             char txt_val[16];
             snprintf(txt_val, sizeof(txt_val), is_year ? "%04d" : "%02d", val);
+            draw_rectangle_90(menu_buffer, LCD_H_RES, LCD_V_RES, 305, 200, 674, 350, 0x0000);
             draw_clock_perfect_monospace_90(menu_buffer, LCD_H_RES, LCD_V_RES, digital_7_ttf, txt_val, is_year ? 350 : 470, 250, is_year ? 180.0f : 220.0f, 0xFFFF);
-            show_debug_touch(touchX, touchY);
-
             esp_cache_msync((void *)menu_buffer, BUFFER_SIZE, ESP_CACHE_MSYNC_FLAG_DIR_C2M);
             xSemaphoreTake(vsync_sem, portMAX_DELAY);
             lcd.lcd_draw_bitmap(0, 0, LCD_H_RES, LCD_V_RES, (uint8_t *)fbs[0]);
@@ -1217,19 +1304,24 @@ int edit_number_menu(const char *title, int title_x, int start_val, int min_val,
 
         if (touchX > 0 && touchY > 0)
         {
-            if (touchX >= 200 && touchX <= 600 && touchY >= 50 && touchY <= 350 && (hold_counter == 1 || (hold_counter > 500 && hold_counter % 15 == 0)))
+            // MINUS button pressed
+            // if (touchX >= 200 && touchX <= 600 && touchY >= 50 && touchY <= 350 && (hold_counter == 1 || (hold_counter > 500 && hold_counter % 15 == 0)))
+            if (touchX >= 200 && touchX <= 600 && touchY >= 50 && touchY <= 350 && (hold_counter == 1 || (hold_counter > 25 && hold_counter % 3 == 0)))
             {
                 val = (val <= min_val) ? max_val : val - 1;
                 content_changed = true;
             }
-
-            else if (touchX >= 200 && touchX <= 600 && touchY >= 950 && touchY <= 1250 && (hold_counter == 1 || (hold_counter > 500 && hold_counter % 15 == 0)))
+            // PLUS button pressed
+            // else if (touchX >= 200 && touchX <= 600 && touchY >= 950 && touchY <= 1250 && (hold_counter == 1 || (hold_counter > 500 && hold_counter % 15 == 0)))
+            else if (touchX >= 200 && touchX <= 600 && touchY >= 950 && touchY <= 1250 && (hold_counter == 1 || (hold_counter > 25 && hold_counter % 3 == 0)))
             {
                 val = (val >= max_val) ? min_val : val + 1;
                 content_changed = true;
             }
+            // DONE button pressed
             else if (touchX >= 50 && touchX <= 250 && touchY >= 450 && touchY <= 850)
             {
+                vTaskSuspend(hTaskHardwareTouchDriver);
                 break;
             }
 
@@ -1239,11 +1331,35 @@ int edit_number_menu(const char *title, int title_x, int start_val, int min_val,
         {
             hold_counter = 0;
         }
-        if (touchX == 0 && touchY == 0)
+
+        // =========================================================================
+        // NIEZALEŻNE ODŚWIEŻANIE DEBUGERA DOTYKU (BEZ ZAKŁÓCANIA REPETYCJI!)
+        // =========================================================================
+        if (touchX > 0 && touchY > 0)
         {
-            vTaskDelay(pdMS_TO_TICKS(10));
+            // Odświeżamy obraz na LCD TYLKO wtedy, gdy palec fizycznie zmienił pozycję
+            if (touchX != old_touchX || touchY != old_touchY)
+            {
+                old_touchX = touchX;
+                old_touchY = touchY;
+
+                // Rysujemy debuger dotyku (pole o szerokości 300 idealnie mieści się przed ramką minusa)
+                draw_rectangle_90(menu_buffer, LCD_H_RES, LCD_V_RES, 10, 10, 300, 35, 0x0000);
+                show_debug_touch(touchX, touchY);
+
+                // Wypychamy na LCD wyłącznie gdy stan cyfr nie wymusił odświeżenia klatki
+                if (!content_changed)
+                {
+                    esp_cache_msync((void *)menu_buffer, BUFFER_SIZE, ESP_CACHE_MSYNC_FLAG_DIR_C2M);
+                    xSemaphoreTake(vsync_sem, portMAX_DELAY);
+                    lcd.lcd_draw_bitmap(0, 0, LCD_H_RES, LCD_V_RES, (uint8_t *)fbs[0]);
+                }
+            }
         }
+
+        vTaskDelay(pdMS_TO_TICKS(15));
     }
+    vTaskSuspend(hTaskHardwareTouchDriver);
     wait_for_release();
     return val;
 }
@@ -1344,7 +1460,322 @@ void wyswietl_jpeg_ze_spiffs(const char *sciezka_pliku)
 //=====================================================================================================
 //=====================================================================================================
 //=====================================================================================================
+// JEDNORAZOWY ZAPIS SSID I HASLA DO PAMIECI NIEULOTNEJ NVS
+void save_wifi_credentials_to_NVS(const char *ssid, const char *password)
+{
+    nvs_handle_t my_handle;
+    esp_err_t err = nvs_open("wifi_cfg", NVS_READWRITE, &my_handle);
+    if (err == ESP_OK)
+    {
+        nvs_set_str(my_handle, "ssid", ssid);
+        nvs_set_str(my_handle, "pass", password);
+        nvs_commit(my_handle);
+        nvs_close(my_handle);
+        printf("[NVS_WIFI] Dane sieci Wi-Fi zostaly trwale zapisane w NVS!\n");
+    }
+    else
+    {
+        printf("[NVS_WIFI_ERROR] Blad otwarcia NVS do zapisu (%s)\n", esp_err_to_name(err));
+    }
+}
 
+// ODCZYT SSID I HASLA Z PAMIECI NVS
+bool load_wifi_credentials_from_NVS(char *ssid_out, size_t ssid_max_len, char *pass_out, size_t pass_max_len)
+{
+    nvs_handle_t my_handle;
+    esp_err_t err = nvs_open("wifi_cfg", NVS_READONLY, &my_handle);
+    if (err != ESP_OK)
+    {
+        printf("[NVS_WIFI] Brak zapisanej konfiguracji Wi-Fi w NVS.\n");
+        return false;
+    }
+
+    size_t s_len = ssid_max_len;
+    size_t p_len = pass_max_len;
+    esp_err_t err1 = nvs_get_str(my_handle, "ssid", ssid_out, &s_len);
+    esp_err_t err2 = nvs_get_str(my_handle, "pass", pass_out, &p_len);
+    nvs_close(my_handle);
+
+    if (err1 == ESP_OK && err2 == ESP_OK)
+    {
+        printf("[NVS_WIFI] Odczytano SSID z NVS: %s\n", ssid_out);
+        return true;
+    }
+
+    printf("[NVS_WIFI] Niekompletne dane Wi-Fi w NVS.\n");
+    return false;
+}
+//=====================================================================================================
+//=====================================================================================================
+//=====================================================================================================
+void print_internal_ram_stats(const char *etap)
+{
+    size_t free_internal = heap_caps_get_free_size(MALLOC_CAP_INTERNAL);
+    size_t min_free_internal = heap_caps_get_minimum_free_size(MALLOC_CAP_INTERNAL);
+    size_t largest_block = heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL);
+
+    printf("[SRAM_STAT - %s] Wolne teraz: %u KB (%u B) | Najmniej w historii: %u KB | Najwiekszy blok: %u KB\n",
+           etap,
+           free_internal / 1024,
+           free_internal,
+           min_free_internal / 1024,
+           largest_block / 1024);
+}
+//=====================================================================================================
+//=====================================================================================================
+//=====================================================================================================
+void vTaskFourHourIncrementer(void *pvParameters)
+{
+    printf("[SYSTEM] Zadanie cykliczne NTP (24h / 4h) wystartowało.\n");
+
+    // Licznik wybudzeń (6 wywołań * 4 godziny = 24 godziny)
+    static int licznik_4h = 0;
+    static bool ostatnia_sync_udana = false;
+
+    // Po restarcie urządzenia wykonujemy pierwszą natychmiastową próbę synchronizacji
+    start_ntp_sync_task_async();
+
+    while (1)
+    {
+        // Zadanie śpi przez dokładnie 4 godziny
+        vTaskDelay(pdMS_TO_TICKS(4 * 60 * 60 * 1000));
+
+        licznik_4h++;
+
+        // Flaga sprawdzająca, czy to czas na dobową synchronizację
+        bool czas_na_dobowa_sync = (licznik_4h >= 6);
+
+        // Jeśli minęła doba LUB poprzednia próba zakończyła się błędem:
+        if (czas_na_dobowa_sync || !ostatnia_sync_udana)
+        {
+            printf("[HARMONOGRAM] Uruchamiam cykliczne zadanie NTP (Czas na dobową: %d, Stan poprzedniej: %d)\n",
+                   czas_na_dobowa_sync, ostatnia_sync_udana);
+
+            if (!is_ntp_sync_running())
+            {
+                start_ntp_sync_task_async();
+                while (is_ntp_sync_running())
+                {
+                    vTaskDelay(pdMS_TO_TICKS(200));
+                }
+
+                time_t teraz;
+                struct tm info;
+                time(&teraz);
+                localtime_r(&teraz, &info);
+
+                if (info.tm_year >= (2026 - 1900))
+                {
+                    ostatnia_sync_udana = true;
+                    licznik_4h = 0; // Sukces! Resetujemy licznik dobowy
+                    printf("[HARMONOGRAM] Cykliczna synchronizacja udana. Następna próba za 24h.\n");
+                }
+                else
+                {
+                    ostatnia_sync_udana = false;
+                    printf("[HARMONOGRAM] Cykliczna synchronizacja nieudana! Ponowienie nastąpi za 4 godziny.\n");
+                }
+            }
+        }
+    }
+}
+//=====================================================================================================
+//=====================================================================================================
+//=====================================================================================================
+void set_ntp_menu(void)
+{
+    uint16_t *back_buffer = (uint16_t *)fbs[0]; // wolny bufor ekranu do rysowania
+    printf("[MENU] -> Uruchomiono graficzne Menu synchronizacji NTP.\n");
+    wait_for_release();            // Czekamy na puszczenie ekranu przed wejściem do menu, aby uniknąć natychmiastowego wyzwolenia przycisku
+    vTaskDelay(pdMS_TO_TICKS(50)); // Dajemy czas na fizyczne przemieszczenie kontrolera i zdejmujemy blokadę czasu
+
+    // Czyszczenie i przygotowanie czystego bufora ekranu
+    xSemaphoreTake(fb_mutex, portMAX_DELAY);
+    memset(fbs[0], 0x00, 800 * 1280 * 2); // Czyszczenie na czarno (RGB565)
+
+    // =================================================================================
+    // 1. PRZYCISK "START NTP" (WYŻEJ NA OSI Y)
+    // =================================================================================
+    // Pozycja: X=390, Y=300, Szerokość=500, Wysokość=120, grubość=4, kolor=zielony
+    draw_hollow_rectangle_90(fbs[0], LCD_H_RES, LCD_V_RES, 390, 300, 500, 135, 4, 0x07E0);
+    draw_text_90(fbs[0], LCD_H_RES, LCD_V_RES, "START NTP", 430, 310, 100, 0x07E0);
+
+    // 4. To ZOSTAJE: Przycisk DONE (Ramka i napis) - użytkownik musi jakoś wyjść z menu
+    draw_text_90(back_buffer, LCD_H_RES, LCD_V_RES, "DONE", 510, 580, 150, 0xFFFF);
+    draw_hollow_rectangle_90(back_buffer, LCD_H_RES, LCD_V_RES, 390, 600, 500, 120, 4, 0xFFFF);
+
+    xSemaphoreGive(fb_mutex);
+    esp_cache_msync(fbs[0], 800 * 1280 * 2, ESP_CACHE_MSYNC_FLAG_DIR_C2M);
+    xSemaphoreTake(vsync_sem, portMAX_DELAY);
+    lcd.lcd_draw_bitmap(0, 0, LCD_H_RES, LCD_V_RES, (uint8_t *)fbs[0]);
+    // vTaskResume(hTaskTouch); // Budzimy dotyk dedykowany dla tego menu
+
+    // 👇 WYBUDZENIE PRZED PĘTLĄ WHILE 👇
+    if (hTaskHardwareTouchDriver != NULL)
+    {
+        vTaskResume(hTaskHardwareTouchDriver);
+    }
+
+    bool exit_menu = false;
+    while (!exit_menu)
+    {
+        // Sprawdzamy stan z niskopoziomowego wątku sprzętowego
+        if (global_is_touched)
+        {
+            uint16_t tx = global_touchX;
+            uint16_t ty = global_touchY;
+
+            // --- DEBUGER DOTYKU NA EKRANIE ---
+            // Czyścimy mały pasek pod cyframi w lewym rogu i rysujemy koordynaty
+            draw_rectangle_90(back_buffer, LCD_H_RES, LCD_V_RES, 10, 10, 300, 35, 0x0000);
+            show_debug_touch(tx, ty);
+
+            // 1. HIT-BOX dla przycisku START NTP (Ramka Y=300, wysokość 120 -> ty od ok. 300 do 450)
+            if (tx >= 380 && tx <= 500 && ty >= 390 && ty <= 890)
+            {
+                if (!is_ntp_sync_running())
+                {
+                    printf("[MENU NTP] -> Ręczne wywołanie synchronizacji czasu...\n");
+
+                    // Czyścimy przestrzeń pomiędzy przyciskami (Y=450 do 580) na czarno pod status
+                    draw_rectangle_90(back_buffer, LCD_H_RES, LCD_V_RES, 100, 440, 1100, 150, 0x0000);
+                    draw_text_90(back_buffer, LCD_H_RES, LCD_V_RES, "SYNCHRONIZACJA...", 360, 470, 70.0f, 0xF800); // Czerwony napis
+
+                    // Wypychamy status na ekran przed uruchomieniem workera
+                    esp_cache_msync(fbs[0], 800 * 1280 * 2, ESP_CACHE_MSYNC_FLAG_DIR_C2M);
+                    xSemaphoreTake(vsync_sem, portMAX_DELAY);
+                    lcd.lcd_draw_bitmap(0, 0, LCD_H_RES, LCD_V_RES, (uint8_t *)fbs[0]);
+
+                    start_ntp_sync_task_async(); // Start wątku sieciowego
+
+                    // Czekamy na zakończenie pobierania czasu
+                    while (is_ntp_sync_running())
+                    {
+                        vTaskDelay(pdMS_TO_TICKS(50));
+                    }
+
+                    // Po sukcesie: zamalowujemy stary napis i dajemy komunikat sukcesu
+                    draw_rectangle_90(back_buffer, LCD_H_RES, LCD_V_RES, 100, 440, 1100, 150, 0x0000);
+                    draw_text_90(back_buffer, LCD_H_RES, LCD_V_RES, "ZAKONCZONO SUKCESEM!", 300, 470, 70.0f, 0x07E0); // Zielony napis
+                }
+            }
+
+            // 2. HIT-BOX dla przycisku DONE (Ramka Y=600, wysokość 120 -> ty od ok. 600 do 750)
+            if (tx >= 50 && tx <= 250 && ty >= 600 && ty <= 750)
+            {
+                printf("[MENU NTP] -> Kliknięto DONE. Powrót do zegara.\n");
+                wait_for_release(); // Czekamy na puszczenie ekranu przed wyjściem z menu, aby uniknąć natychmiastowego wyzwolenia przycisku
+                vTaskDelay(pdMS_TO_TICKS(150));
+                exit_menu = true;
+            }
+
+            // Synchronizacja klatki po dotknięciu (odświeża suwak i współrzędne debugowania)
+            esp_cache_msync(fbs[0], 800 * 1280 * 2, ESP_CACHE_MSYNC_FLAG_DIR_C2M);
+            xSemaphoreTake(vsync_sem, portMAX_DELAY);
+            lcd.lcd_draw_bitmap(0, 0, LCD_H_RES, LCD_V_RES, (uint8_t *)fbs[0]);
+        }
+        vTaskDelay(pdMS_TO_TICKS(15)); // Częstotliwość odświeżania pętli
+    }
+
+    vTaskSuspend(hTaskHardwareTouchDriver);
+
+    wait_for_release();             // Czekamy na puszczenie ekranu przed wejściem do menu, aby uniknąć natychmiastowego wyzwolenia przycisku
+    vTaskDelay(pdMS_TO_TICKS(150)); // Dajemy czas na fizyczne przemieszczenie kontrolera i zdejmujemy blokadę czasu
+
+    // Powrót do ekranu głównego
+    // is_editing_time = false;
+    old_seconds = 111; // Wymuszenie pełnego odświeżenia grafiki ekranu głównego
+}
+//=====================================================================================================
+//=====================================================================================================
+//=====================================================================================================
+void refresh_menu_self(void)
+{
+    uint16_t *menu_buffer = (uint16_t *)fbs[0];
+    xSemaphoreTake(fb_mutex, portMAX_DELAY);
+    memset(fbs[0], 0x00, 800 * 1280 * 2);
+    // Linia pionowa dzielaca ekran na pol przy X=640
+    draw_rectangle_90(menu_buffer, LCD_H_RES, LCD_V_RES, 638, 0, 4, 400, 0xFFFF);
+    draw_hollow_rectangle_90(menu_buffer, LCD_H_RES, LCD_V_RES, 0, 0, 1276, 400, 4, 0xFFFF);
+    draw_hollow_rectangle_90(menu_buffer, LCD_H_RES, LCD_V_RES, 70, 140, 500, 120, 4, 0x07E0);
+    draw_text_90(menu_buffer, LCD_H_RES, LCD_V_RES, "NTP", 270, 150, 100.0f, 0x07E0);
+    draw_hollow_rectangle_90(menu_buffer, LCD_H_RES, LCD_V_RES, 710, 140, 500, 120, 4, 0x001F);
+    draw_text_90(menu_buffer, LCD_H_RES, LCD_V_RES, "DEMO", 890, 150, 100.0f, 0x001F);
+    draw_hollow_rectangle_90(menu_buffer, LCD_H_RES, LCD_V_RES, 390, 600, 500, 120, 4, 0xFFFF);
+    draw_text_90(menu_buffer, LCD_H_RES, LCD_V_RES, "DONE", 510, 580, 150.0f, 0xFFFF);
+    esp_cache_msync(fbs[0], 800 * 1280 * 2, ESP_CACHE_MSYNC_FLAG_DIR_C2M);
+    xSemaphoreTake(vsync_sem, portMAX_DELAY);
+    lcd.lcd_draw_bitmap(0, 0, LCD_H_RES, LCD_V_RES, (uint8_t *)fbs[0]);
+    xSemaphoreGive(fb_mutex);
+    wait_for_release();
+}
+void set_ntp_and_demo_menu(void)
+{
+    uint16_t *menu_buffer = (uint16_t *)fbs[0];
+    uint16_t old_tx = 9999, old_ty = 9999;
+    bool exit_menu = false;
+
+    refresh_menu_self();
+
+    if (hTaskHardwareTouchDriver != NULL)
+    {
+        vTaskResume(hTaskHardwareTouchDriver);
+    }
+    while (!exit_menu)
+    {
+        uint16_t tx = global_touchX, ty = global_touchY;
+        if (global_is_touched && (tx != old_tx || ty != old_ty))
+        {
+            old_tx = tx;
+            old_ty = ty;
+            xSemaphoreTake(fb_mutex, portMAX_DELAY);
+            draw_rectangle_90(menu_buffer, LCD_H_RES, LCD_V_RES, 10, 10, 300, 35, 0x0000);
+            show_debug_touch(tx, ty);
+            xSemaphoreGive(fb_mutex);
+            esp_cache_msync(fbs[0], 800 * 1280 * 2, ESP_CACHE_MSYNC_FLAG_DIR_C2M);
+            xSemaphoreTake(vsync_sem, portMAX_DELAY);
+            lcd.lcd_draw_bitmap(0, 0, LCD_H_RES, LCD_V_RES, (uint8_t *)fbs[0]);
+        }
+        if (global_is_touched)
+        {
+            // Obsluga przycisku NTP (lewa gorna cwiartka)
+            if (tx >= 540 && tx <= 660 && ty >= 70 && ty <= 570)
+            {
+                set_ntp_menu();
+                vTaskResume(hTaskHardwareTouchDriver);
+                vTaskDelay(pdMS_TO_TICKS(150));
+                refresh_menu_self(); // Czyste wywołanie odświeżenia
+            }
+
+            // Obsluga przycisku DEMO (prawa gorna cwiartka)
+            if (tx >= 540 && tx <= 660 && ty >= 680 && ty <= 1279)
+            {
+                printf("[MENU NTP] -> Uruchamiam Vector Dots Demo...\n");
+                run_vector_dots_demo_loop();
+            }
+            // Obsluga przycisku DONE (wyjscie na dolnym pasku)
+            if (tx >= 50 && tx <= 250 && ty >= 600 && ty <= 750)
+            {
+                printf("[MENU NTP] -> Kliknieto DONE. Powrot.\n");
+                exit_menu = true;
+            }
+        }
+        vTaskDelay(pdMS_TO_TICKS(15));
+    }
+
+    vTaskSuspend(hTaskHardwareTouchDriver);
+
+    wait_for_release();
+    vTaskDelay(pdMS_TO_TICKS(150));
+    old_seconds = 111;
+}
+//=====================================================================================================
+//=====================================================================================================
+//=====================================================================================================
+void run_vector_dots_demo_loop(void)
+{
+    // NEW VECTOR DOTS DEMO
+}
 //=====================================================================================================
 //=====================================================================================================
 //=====================================================================================================
