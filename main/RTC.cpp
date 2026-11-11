@@ -344,7 +344,7 @@ void vTaskTouch(void *pvParameters)
 void init_RTC_subsystem(void)
 {
     uint32_t duty;
-    // save_wifi_credentials_to_NVS("SSID", "Password"); // Zapisz dane Wi-Fi do NVS (tylko raz, jeśli nie zapisano wcześniej)
+
     char test_ssid[33] = {0};
     char test_pass[65] = {0};
     // Tworzenie wątku na rdzeniu 1 (peryferyjnym)
@@ -354,18 +354,19 @@ void init_RTC_subsystem(void)
     {
         vTaskSuspend(hTaskHardwareTouchDriver);
     }
-
-    if (load_wifi_credentials_from_NVS(test_ssid, sizeof(test_ssid), test_pass, sizeof(test_pass)))
+    // NOWOŚĆ: Montujemy dysk zanim ruszą zadania FreeRTOS
+    // tu jest plik z danymi dla WiFi
+    init_spiffs_storage();
+    // save_wifi_credentials_to_SPIFFS("SSID", "Password"); // Zapisz dane Wi-Fi do SPIFFS (tylko raz, jeśli nie zapisano wcześniej)
+    if (load_wifi_credentials_from_SPIFFS(test_ssid, sizeof(test_ssid), test_pass, sizeof(test_pass)))
     {
-        printf("[NVS_TEST] SUKCES! Odczytano z NVS -> SSID oraz HASLO");
+        printf("[SPIFFS_TEST] SUKCES! Odczytano z SPIFFS -> SSID oraz HASLO");
     }
     else
     {
-        printf("[NVS_TEST] BLAD! Brak danych w NVS.\n");
+        printf("[SPIFFS_TEST] BLAD! Brak danych w SPIFFS !\n");
     }
 
-    // NOWOŚĆ: Montujemy dysk zanim ruszą zadania FreeRTOS
-    init_spiffs_storage();
     fb_mutex = xSemaphoreCreateMutex();
 
     // TESTOWE WYŚWIETLENIE PIERWSZEGO ZDJĘCIA (Zaraz po starcie na chwilę pokaże FOTO1.jpg!)
@@ -1460,50 +1461,59 @@ void wyswietl_jpeg_ze_spiffs(const char *sciezka_pliku)
 //=====================================================================================================
 //=====================================================================================================
 //=====================================================================================================
-// JEDNORAZOWY ZAPIS SSID I HASLA DO PAMIECI NIEULOTNEJ NVS
-void save_wifi_credentials_to_NVS(const char *ssid, const char *password)
+// JEDNORAZOWY ZAPIS SSID I HASLA DO PAMIECI NIEULOTNEJ SPIFFS
+bool save_wifi_credentials_to_SPIFFS(const char *ssid, const char *password)
 {
-    nvs_handle_t my_handle;
-    esp_err_t err = nvs_open("wifi_cfg", NVS_READWRITE, &my_handle);
-    if (err == ESP_OK)
+    FILE *f = fopen("/spiffs/prefs.ini", "w");
+    if (f == NULL)
     {
-        nvs_set_str(my_handle, "ssid", ssid);
-        nvs_set_str(my_handle, "pass", password);
-        nvs_commit(my_handle);
-        nvs_close(my_handle);
-        printf("[NVS_WIFI] Dane sieci Wi-Fi zostaly trwale zapisane w NVS!\n");
-    }
-    else
-    {
-        printf("[NVS_WIFI_ERROR] Blad otwarcia NVS do zapisu (%s)\n", esp_err_to_name(err));
-    }
-}
-
-// ODCZYT SSID I HASLA Z PAMIECI NVS
-bool load_wifi_credentials_from_NVS(char *ssid_out, size_t ssid_max_len, char *pass_out, size_t pass_max_len)
-{
-    nvs_handle_t my_handle;
-    esp_err_t err = nvs_open("wifi_cfg", NVS_READONLY, &my_handle);
-    if (err != ESP_OK)
-    {
-        printf("[NVS_WIFI] Brak zapisanej konfiguracji Wi-Fi w NVS.\n");
+        printf("[SPIFFS_WIFI_ERROR] Nie mozna otworzyc pliku /spiffs/prefs.ini do zapisu!\n");
         return false;
     }
 
-    size_t s_len = ssid_max_len;
-    size_t p_len = pass_max_len;
-    esp_err_t err1 = nvs_get_str(my_handle, "ssid", ssid_out, &s_len);
-    esp_err_t err2 = nvs_get_str(my_handle, "pass", pass_out, &p_len);
-    nvs_close(my_handle);
+    // Zapisujemy SSID w pierwszej linii oraz hasło w drugiej linii
+    fprintf(f, "%s\n%s\n", ssid, password);
+    fclose(f); // Zawsze zamykamy plik, aby fizycznie zrzucić dane z bufora do Flash!
 
-    if (err1 == ESP_OK && err2 == ESP_OK)
+    printf("[SPIFFS_WIFI] Zapisano dane Wi-Fi do /spiffs/prefs.ini (SSID: %s)\n", ssid);
+    return true;
+}
+//=====================================================================================================
+//=====================================================================================================
+//=====================================================================================================
+// ODCZYT SSID I HASLA Z PLIKU /spiffs/prefs.ini
+bool load_wifi_credentials_from_SPIFFS(char *ssid_out, size_t ssid_max_len, char *pass_out, size_t pass_max_len)
+{
+    FILE *f = fopen("/spiffs/prefs.ini", "r");
+    if (f == NULL)
     {
-        printf("[NVS_WIFI] Odczytano SSID z NVS: %s\n", ssid_out);
-        return true;
+        printf("[SPIFFS_WIFI] Brak pliku /spiffs/prefs.ini!\n");
+        return false;
     }
 
-    printf("[NVS_WIFI] Niekompletne dane Wi-Fi w NVS.\n");
-    return false;
+    // Czytamy 1. linię (SSID) oraz 2. linię (Hasło)
+    bool ok1 = (fgets(ssid_out, ssid_max_len, f) != NULL);
+    bool ok2 = (fgets(pass_out, pass_max_len, f) != NULL);
+    fclose(f);
+
+    if (!ok1 || !ok2)
+    {
+        printf("[SPIFFS_WIFI] Plik /spiffs/prefs.ini jest pusty lub niekompletny!\n");
+        return false;
+    }
+
+    // Bezpieczne obcięcie znaków nowej linii (\r oraz \n) z Windowsa i Linuxa
+    ssid_out[strcspn(ssid_out, "\r\n")] = '\0';
+    pass_out[strcspn(pass_out, "\r\n")] = '\0';
+
+    if (strlen(ssid_out) == 0)
+    {
+        printf("[SPIFFS_WIFI] Pusty SSID w pliku prefs.ini!\n");
+        return false;
+    }
+
+    printf("[SPIFFS_WIFI] Odczytano SSID z SPIFFS: %s\n", ssid_out);
+    return true;
 }
 //=====================================================================================================
 //=====================================================================================================

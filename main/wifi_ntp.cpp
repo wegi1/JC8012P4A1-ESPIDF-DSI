@@ -97,14 +97,15 @@ void vTaskNtpSyncWorker(void *pvParameters)
     char ssid[64] = {0};
     char pass[64] = {0};
 
-    // 1. Odczyt danych sieciowych z NVS (Twoja funkcja z RTC.CPP)
-    if (!load_wifi_credentials_from_NVS(ssid, sizeof(ssid), pass, sizeof(pass)))
+    // 1. Odczyt danych sieciowych z SPIFFS (Twoja funkcja z RTC.CPP)
+    if (!load_wifi_credentials_from_SPIFFS(ssid, sizeof(ssid), pass, sizeof(pass)))
     {
-        ESP_LOGE(TAG, "Brak zapisanego SSID/hasla w NVS! Przerywam bezpiecznie.");
+        ESP_LOGE(TAG, "Brak pliku /spiffs/prefs.ini lub bledne dane! Przerywam bezpiecznie.");
         s_sync_in_progress = false;
         vTaskDelete(NULL);
         return;
     }
+
     // strcpy(ssid, "BAD_SSID");
     // 2. Jednorazowa inicjalizacja stosu sieciowego (nigdy nie powtarzana przy kolejnych próbach!)
     if (!s_wifi_stack_initialized)

@@ -19,15 +19,22 @@ The project stores slideshow graphics on a dedicated Flash partition. To force t
   ```
 * Ensure that you have a folder named `FOTOS` containing the required image files (`FOTO1.jpg`, `FOTO2.jpg`) in the root directory of the project (next to the `main` folder) before starting the build.
 
-#### 2. Initial Wi-Fi Configuration (Saving Credentials to NVS)
-The system securely retrieves network credentials directly from the non-volatile storage (NVS) flash memory. Upon flashing the device for the first time, you must store your network credentials into the Flash structure:
+#### 2. Initial Wi-Fi Configuration (Saving Credentials to SPIFFS)
+The system securely retrieves network credentials directly from the non-volatile storage (SPIFFS) flash memory. Upon flashing the device for the first time, you must store your network credentials into the Flash structure:
 * Open the `main/RTC.cpp` file.
 * Navigate to the `init_RTC_subsystem(void)` function.
 * **Uncomment** the following line for a single run, filling in your actual network credentials (SSID and Password):
   ```cpp
-  save_wifi_credentials_to_NVS("YOUR_SSID", "YOUR_PASSWORD");
+  save_wifi_credentials_to_SPIFFS("YOUR_SSID", "YOUR_PASSWORD");
   ```
-* Compile and flash the device. Once the device boots up for the first time and successfully commits the data to NVS, **comment this line out again** to avoid redundant Flash cell overwrites on subsequent reboots.
+
+OR
+* Locate and **uncomment** (remove the `#` character) the following line:
+  ```cmake
+  spiffs_create_partition_image(storage "\${CMAKE_CURRENT_LIST_DIR}/../FOTOS" FLASH_IN_PROJECT)
+
+Create a plain text file named "prefs.ini" inside the FOTOS folder containing two lines: your Wi-Fi SSID on the first line and your password on the second line.
+* Compile and flash the device. Once the device boots up for the first time and successfully commits the data to SPIFFS, **comment this line out again** in /manin/CmakeLists.txt file [#spiffs_create_partition_image(storage "\${CMAKE_CURRENT_LIST_DIR}/../FOTOS" FLASH_IN_PROJECT)] to avoid redundant Flash cell overwrites on subsequent flashimg.
 
 #### ⚙️ Build Optimization Recommendations
 To guarantee native, hardware-level fluidness of the MIPI-DSI bus, eliminate frame tearing, and maintain strict timing for the `vTaskHardwareTouchDriver` background task, **the entire project must be compiled using the `-Og` mode** (Optimization for Debugging) via menuconfig. This mode ensures stable interrupt handling and keeps the rendering engine perfectly synchronized with the display's vertical sync (VSYNC) interrupts.
@@ -51,15 +58,27 @@ Projekt przechowuje grafiki pokazu slajdów na dedykowanej partycji Flash. Aby s
   ```
 * Upewnij się, że w głównym katalogu projektu (obok folderu `main`) posiadasz folder `FOTOS` zawierający pliki graficzne (`FOTO1.jpg`, `FOTO2.jpg`) przed uruchomieniem budowania.
 
-#### 2. Pierwsza konfiguracja sieci Wi-Fi (Zapis w pamięci NVS)
-Projekt korzysta z bezpiecznego odczytu danych logowania do sieci bezpośrednio z nieulotnej pamięci flash (NVS). Przy pierwszym uruchomieniu urządzenia na nowej płytce należy fizycznie zapisać te dane w strukturze Flash:
+#### 2. Pierwsza konfiguracja sieci Wi-Fi (Zapis w pamięci SPIFFS)
+Projekt korzysta z bezpiecznego odczytu danych logowania do sieci bezpośrednio z nieulotnej pamięci flash (SPIFFS). Przy pierwszym uruchomieniu urządzenia na nowej płytce należy fizycznie zapisać te dane w strukturze Flash:
 * Otwórz plik `main/RTC.cpp`.
 * Przejdź do funkcji `init_RTC_subsystem(void)`.
 * **Odkomentuj** na jedno uruchomienie poniższą linię, wpisując swoje rzeczywiste dane sieciowe (SSID oraz Hasło):
   ```cpp
-  save_wifi_credentials_to_NVS("TWOJE_SSID", "TWOJE_HASLO");
+  save_wifi_credentials_to_SPIFFS("TWOJE_SSID", "TWOJE_HASLO");
   ```
 * Skompiluj i sflaszuj urządzenie. Po pierwszym uruchomieniu i pomyślnym zapisie danych w pamięci NVS, **ponownie zakomentuj tę linię**, aby nie nadpisywać niepotrzebnie komórek Flash przy każdym kolejnym restarcie urządzenia.
+
+ALBO
+
+dodaj plik tekstowy w folderze FOTOS o nazwie "prefs.ini", a w jego 2 liniach wpisz Twoje SSID i w drugiej linii Twoje HASŁO
+
+* Otwórz plik `main/CMakeLists.txt`.
+* Znajdź i **odkomentuj** (usuń znak `#`) poniższą linię:
+  ```cmake
+  spiffs_create_partition_image(storage "\${CMAKE_CURRENT_LIST_DIR}/../FOTOS" FLASH_IN_PROJECT)
+  ```
+
+po kompilacji i sflaszowaniu zakomentuj tą linię krzyżykiem: #spiffs_create_partition_image(storage "\${CMAKE_CURRENT_LIST_DIR}/../FOTOS" FLASH_IN_PROJECT) aby za każdym razem zbędnie nie flaszować partycji SPIFFS
 
 #### ⚙️ Zalecenia dotyczące optymalizacji kompilacji
 Dla zapewnienia idealnej, sprzętowej płynności magistrali MIPI-DSI, braku szarpania klatek oraz stabilnego timingu wątku sprzętowego dotyku `vTaskHardwareTouchDriver`, **cały projekt należy kompilować w trybie `-Og`** (Optimization for Debugging) w menuconfig. Tryb ten zapewnia wzorcową stabilność obsługi przerw oraz pełną synchronizację renderera z przerwaniami pionowymi wyświetlacza (VSYNC).
