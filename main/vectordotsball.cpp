@@ -14,7 +14,7 @@
 #include "esp_cache.h"
 #include "esp_heap_caps.h"
 #include "jd9365_lcd.h"
-
+#include "esp_timer.h"
 //==========================================================
 // Zasoby zdefiniowane w main.cpp
 extern jd9365_lcd lcd;
@@ -25,8 +25,8 @@ extern SemaphoreHandle_t vsync_sem;
 extern volatile bool global_is_touched;
 extern void wait_for_release(void);
 extern void refresh_menu_self(void);
-extern void set_backlight_brightness(uint8_t percentage);
-
+extern void set_max_briggtness(void);
+extern void restore_brightness(void);
 extern SemaphoreHandle_t fb_mutex;
 
 //====================
@@ -152,7 +152,7 @@ static void zoom_manage(void)
 }
 void start_vectordots_ball(void)
 {
-    // xSemaphoreTake(fb_mutex, portMAX_DELAY);
+    xSemaphoreTake(fb_mutex, portMAX_DELAY);
     FRAME_ADDRESS = (uint32_t)fbs[0];
     void *buf2_ptr = heap_caps_aligned_alloc(64, 800 * 1280 * 2, MALLOC_CAP_SPIRAM);
     FRAME_2_ADDRESS = (uint32_t)buf2_ptr;
@@ -173,8 +173,7 @@ void start_vectordots_ball(void)
     uint32_t *pFBaddr = (uint32_t *)FRAME_ADDRESS;
     uint32_t *pFBaddr2 = (uint32_t *)FRAME_2_ADDRESS;
 
-    uint8_t old_brightness = BRIGHTNESS;
-    set_backlight_brightness(100);
+    set_max_briggtness();
     global_is_touched = false;
 
     // clear both framebuffers
@@ -186,6 +185,11 @@ void start_vectordots_ball(void)
     plots02[0] = FRAME_2_ADDRESS;
     plots01[0] = FRAME_ADDRESS;
     insert_dots();
+    // SYNCHRONIZACJA Z DMA
+    xSemaphoreTake(vsync_sem, 0);
+    xSemaphoreTake(vsync_sem, portMAX_DELAY);
+    // uint32_t fps_counter = 0;
+    // int64_t t_start = esp_timer_get_time();
     while (1)
     {
         //---
@@ -217,11 +221,14 @@ void start_vectordots_ball(void)
                 pFBaddr[i] = 0; // fill SDRAM layer buffors as black color
             }
 
+            vTaskDelay(pdMS_TO_TICKS(20));
             free(buf2_ptr);
-            set_backlight_brightness(old_brightness);
-            // xSemaphoreGive(fb_mutex);
+
             wait_for_release();
+            restore_brightness();
+            xSemaphoreGive(fb_mutex);
             refresh_menu_self();
+
             return;
         }
         // esp_cache_msync((void *)FRAME_2_ADDRESS, 800 * 1280 * 2, ESP_CACHE_MSYNC_FLAG_DIR_C2M);
@@ -252,6 +259,15 @@ void start_vectordots_ball(void)
         // esp_cache_msync((void *)FRAME_ADDRESS, 800 * 1280 * 2, ESP_CACHE_MSYNC_FLAG_DIR_C2M);
         xSemaphoreTake(vsync_sem, portMAX_DELAY);
         lcd.lcd_draw_bitmap(0, 0, 800, 1280, (uint8_t *)FRAME_ADDRESS);
+        // fps_counter += 2; // bo w jednym obiegu while rysujesz 2 klatki
+        // if (fps_counter >= 120)
+        // {
+        //     int64_t elapsed_us = esp_timer_get_time() - t_start;
+        //     float real_fps = (120.0f * 1000000.0f) / elapsed_us;
+        //     // printf("[DEMO_BENCH] 120 ramek w %lld ms -> Realny FPS: %.2f\n", elapsed_us / 1000, real_fps);
+        //     fps_counter = 0;
+        //     t_start = esp_timer_get_time();
+        // }
     }
 }
 //=======================================================================

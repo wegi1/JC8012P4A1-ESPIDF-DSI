@@ -47,3 +47,6 @@ void vTaskHardwareTouchDriver(void *pvParameters);
 void set_ntp_and_demo_menu(void);
 void run_vector_dots_demo_loop(void);
 void refresh_menu_self(void);
+void set_max_briggtness(void);
+void restore_brightness(void);
+void set_brightness(uint8_t dana);

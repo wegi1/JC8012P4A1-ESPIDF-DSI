@@ -22,7 +22,7 @@ extern "C"
 
 // Deklaracja Twojej istniejącej funkcji z main.cpp
 extern void sync_internal_rtc_with_rx8025t(void);
-
+extern volatile bool ntp_read;
 static const char *TAG = "WIFI_NTP";
 
 #define WIFI_CONNECTED_BIT BIT0
@@ -87,6 +87,11 @@ static void wifi_event_handler(void *arg, esp_event_base_t event_base, int32_t e
             xEventGroupSetBits(s_wifi_event_group, WIFI_CONNECTED_BIT);
         }
     }
+}
+static volatile bool s_sntp_synced = false;
+static void time_sync_notification_cb(struct timeval *tv)
+{
+    s_sntp_synced = true;
 }
 
 void vTaskNtpSyncWorker(void *pvParameters)
@@ -175,28 +180,27 @@ void vTaskNtpSyncWorker(void *pvParameters)
         if (bits & WIFI_CONNECTED_BIT)
         {
             ESP_LOGI(TAG, "Polaczono z Wi-Fi! Pobieram czas z NTP...");
-
+            s_sntp_synced = false;
             esp_sntp_setoperatingmode(ESP_SNTP_OPMODE_POLL);
-            esp_sntp_setservername(0, "pool.ntp.org");
+            esp_sntp_setservername(0, "pl.pool.ntp.org");
             esp_sntp_setservername(1, "time.google.com");
+            sntp_set_time_sync_notification_cb(time_sync_notification_cb);
             esp_sntp_init();
 
             int sntp_wait = 0;
-            while (sntp_get_sync_status() == SNTP_SYNC_STATUS_RESET && sntp_wait < 20)
+            while (!s_sntp_synced && sntp_wait < 20)
             {
                 vTaskDelay(pdMS_TO_TICKS(500));
                 sntp_wait++;
             }
 
-            // Czekamy max 10 sekund aż SNTP zaktualizuje rok powyżej 2024
-            time_t now = 0;
-            struct tm timeinfo = {};
-            time(&now);
-            localtime_r(&now, &timeinfo);
             esp_sntp_stop();
 
-            if (timeinfo.tm_year >= (2025 - 1900))
+            if (s_sntp_synced)
             {
+
+                time_t now = 0;
+                struct tm timeinfo = {};
                 time(&now);
                 localtime_r(&now, &timeinfo);
                 // Zapisujemy pobrany czas do fizycznego zegara RX8025T
@@ -212,6 +216,7 @@ void vTaskNtpSyncWorker(void *pvParameters)
                 if (rx8025t_set_time(&rtc_time) == ESP_OK)
                 {
                     sync_internal_rtc_with_rx8025t();
+                    ntp_read = true;
                     ESP_LOGI(TAG, "SUKCES NTP! Zapisano do RX8025T: %04d-%02d-%02d %02d:%02d:%02d",
                              rtc_time.year, rtc_time.month, rtc_time.day,
                              rtc_time.hour, rtc_time.minute, rtc_time.second);
@@ -253,12 +258,13 @@ void vTaskNtpSyncWorker(void *pvParameters)
 
 void start_ntp_sync_task_async(void)
 {
+
     if (s_sync_in_progress)
     {
         ESP_LOGW(TAG, "Synchronizacja NTP juz trwa - ignoruje kolejne wywolanie.");
         return;
     }
-
+    ntp_read = false;
     s_sync_in_progress = true;
     BaseType_t res = xTaskCreatePinnedToCore(
         vTaskNtpSyncWorker,

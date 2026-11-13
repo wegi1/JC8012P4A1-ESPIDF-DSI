@@ -28,6 +28,7 @@
 #include "wifi_ntp.hpp" // Potrzebne do synchronizacji NTP
 
 #include "vectordotsball.hpp"
+//=====================================================================================================
 
 //=====================================================================================================
 // Definicje dla kanału PWM
@@ -76,7 +77,7 @@ SemaphoreHandle_t fb_mutex = NULL;
 volatile uint16_t global_touchX = 0;
 volatile uint16_t global_touchY = 0;
 volatile bool global_is_touched = false;
-
+volatile bool ntp_read = false;
 //=====================================================================================================
 //=====================================================================================================
 //=====================================================================================================
@@ -307,12 +308,10 @@ void vTaskTouch(void *pvParameters)
                 wyswietl_jpeg_ze_spiffs("/spiffs/FOTO2.jpg");
             }
             vTaskDelay(pdMS_TO_TICKS(12 * 1000)); // 12 sec.
-            uint32_t duty;
+
             for (int t = BRIGHTNESS; t >= 0; t--)
             {
-                duty = (t * 1023) / 100;
-                ledc_set_duty(BACKLIGHT_LEDC_MODE, BACKLIGHT_LEDC_CHANNEL, duty);
-                ledc_update_duty(BACKLIGHT_LEDC_MODE, BACKLIGHT_LEDC_CHANNEL);
+                set_brightness(uint8_t(t));
                 vTaskDelay(pdMS_TO_TICKS(50));
             }
             xSemaphoreTake(fb_mutex, portMAX_DELAY);
@@ -331,9 +330,7 @@ void vTaskTouch(void *pvParameters)
 
             for (int t = 0; t <= BRIGHTNESS; t++)
             {
-                duty = (t * 1023) / 100;
-                ledc_set_duty(BACKLIGHT_LEDC_MODE, BACKLIGHT_LEDC_CHANNEL, duty);
-                ledc_update_duty(BACKLIGHT_LEDC_MODE, BACKLIGHT_LEDC_CHANNEL);
+                set_brightness((uint8_t)t);
                 vTaskDelay(pdMS_TO_TICKS(50));
             }
         }
@@ -346,8 +343,6 @@ void vTaskTouch(void *pvParameters)
 // Funkcja wywoływana raz w app_main() w celu rejestracji zadań w jądrze FreeRTOS
 void init_RTC_subsystem(void)
 {
-    uint32_t duty;
-
     char test_ssid[33] = {0};
     char test_pass[65] = {0};
     // Tworzenie wątku na rdzeniu 1 (peryferyjnym)
@@ -374,24 +369,19 @@ void init_RTC_subsystem(void)
 
     // TESTOWE WYŚWIETLENIE PIERWSZEGO ZDJĘCIA (Zaraz po starcie na chwilę pokaże FOTO1.jpg!)
     // Wygaszamy ekran na start, zanim pokażemy zdjęcie
-    ledc_set_duty(BACKLIGHT_LEDC_MODE, BACKLIGHT_LEDC_CHANNEL, 0);
-    ledc_update_duty(BACKLIGHT_LEDC_MODE, BACKLIGHT_LEDC_CHANNEL);
+    set_brightness(0);
 
     wyswietl_jpeg_ze_spiffs("/spiffs/FOTO1.jpg");
     for (int t = 0; t <= 100; t++)
     {
-        duty = (t * 1023) / 100;
-        ledc_set_duty(BACKLIGHT_LEDC_MODE, BACKLIGHT_LEDC_CHANNEL, duty);
-        ledc_update_duty(BACKLIGHT_LEDC_MODE, BACKLIGHT_LEDC_CHANNEL);
+        set_brightness(uint8_t(t));
         vTaskDelay(pdMS_TO_TICKS(20));
     }
     vTaskDelay(pdMS_TO_TICKS(5000)); // Pokazuj zdjęcie przez 3 sekundy, zanim wystartuje główny zegar!
 
     for (int t = 100; t >= 0; t--)
     {
-        duty = (t * 1023) / 100;
-        ledc_set_duty(BACKLIGHT_LEDC_MODE, BACKLIGHT_LEDC_CHANNEL, duty);
-        ledc_update_duty(BACKLIGHT_LEDC_MODE, BACKLIGHT_LEDC_CHANNEL);
+        set_brightness(uint8_t(t));
         vTaskDelay(pdMS_TO_TICKS(50));
     }
     safe_clear_screen(fbs[0], 0x0000);
@@ -433,17 +423,13 @@ void init_RTC_subsystem(void)
     print_RTC();
     for (int t = 0; t <= BRIGHTNESS; t++)
     {
-        duty = (t * 1023) / 100;
-        ledc_set_duty(BACKLIGHT_LEDC_MODE, BACKLIGHT_LEDC_CHANNEL, duty);
-        ledc_update_duty(BACKLIGHT_LEDC_MODE, BACKLIGHT_LEDC_CHANNEL);
+        set_brightness(uint8_t(t));
         vTaskDelay(pdMS_TO_TICKS(50));
     }
 }
-
 //=====================================================================================================
 //=====================================================================================================
 //=====================================================================================================
-
 void print_RTC(void)
 {
     if (is_editing_time == true)
@@ -494,12 +480,21 @@ void print_RTC(void)
     draw_hollow_rectangle_90(main_buffer, LCD_H_RES, LCD_V_RES, 880, 672, 395, 120, 4, 0x07E0);
     draw_rectangle_90(main_buffer, LCD_H_RES, LCD_V_RES, 888, 680, width_bar, 104, 0xF100); // 100% = 380 widh
     int week_day = calc_dow((dane_czasu.tm_year + 1900), (dane_czasu.tm_mon + 1), dane_czasu.tm_mday);
-    draw_text_90(main_buffer, LCD_H_RES, LCD_V_RES, getDayofweek(week_day), 350, 455, 200.0f, 0xFFFF);
+    draw_text_90(main_buffer, LCD_H_RES, LCD_V_RES, getDayofweek(week_day), 300, 455, 200.0f, 0xFFFF);
     draw_text_90(main_buffer, LCD_H_RES, LCD_V_RES, txt_slider_pct, 1020, 690, 80.0f, 0xFFFF);
 
     // 3. Od razu na nim zapalamy kwadraciki dwukropka
     draw_rectangle_90(main_buffer, LCD_H_RES, LCD_V_RES, 605, 104, 50, 50, 0xFFFF);
     draw_rectangle_90(main_buffer, LCD_H_RES, LCD_V_RES, 605, 300, 50, 50, 0xFFFF);
+
+    if (ntp_read == true)
+    {
+        draw_rectangle_90(main_buffer, LCD_H_RES, LCD_V_RES, 1180, 555, 50, 50, 0x07E0);
+    }
+    else
+    {
+        draw_rectangle_90(main_buffer, LCD_H_RES, LCD_V_RES, 1180, 555, 50, 50, 0xF100);
+    }
 
     // 4. Jedno, czyste i pewne czyszczenie Cache dla tego bufora
     esp_cache_msync((void *)main_buffer, BUFFER_SIZE, ESP_CACHE_MSYNC_FLAG_DIR_C2M);
@@ -614,7 +609,7 @@ void show_debug_touch(uint16_t touchX, uint16_t touchY)
     uint16_t *menu_buffer = (uint16_t *)fbs[0];
     char txt_debug_touch[32];
     snprintf(txt_debug_touch, sizeof(txt_debug_touch), "X:%03d Y:%04d", touchX, touchY);
-    draw_clock_perfect_monospace_90(menu_buffer, LCD_H_RES, LCD_V_RES, digital_7_ttf, txt_debug_touch, 10, 10, 30.0f, 0x07E0);
+    draw_clock_perfect_monospace_90(menu_buffer, LCD_H_RES, LCD_V_RES, digital_7_ttf, txt_debug_touch, 8, 8, 30.0f, 0x07E0);
 }
 //=====================================================================================================
 //=====================================================================================================
@@ -677,7 +672,6 @@ void vTaskMenuEngine(void *pvParameters)
         else if (menu_choice == 7) // NOWOŚĆ: WYWOŁANIE MENU NTP
         {
             set_ntp_and_demo_menu();
-            // set_ntp_menu();
         }
 
         // --- KLUCZOWY FIX PO WCIŚNIĘCIU DONE ---
@@ -686,6 +680,7 @@ void vTaskMenuEngine(void *pvParameters)
         // ====================================================================
 
         // 1. Dajemy chwilę na zakończenie ostatnich transferów DMA z menu
+        xSemaphoreTake(fb_mutex, portMAX_DELAY);
         vTaskDelay(pdMS_TO_TICKS(20));
 
         // 2. Czyścimy bufor tła na idealną czerń i synchronizujemy Cache
@@ -693,11 +688,15 @@ void vTaskMenuEngine(void *pvParameters)
         esp_cache_msync((void *)fbs[0], BUFFER_SIZE, ESP_CACHE_MSYNC_FLAG_DIR_C2M);
 
         // 3. Twardo czekamy na VSYNC i fizycznie zerujemy klatkę na wyświetlaczu
+        xSemaphoreTake(vsync_sem, 0);
         xSemaphoreTake(vsync_sem, portMAX_DELAY);
         lcd.lcd_draw_bitmap(0, 0, LCD_H_RES, LCD_V_RES, (uint8_t *)fbs[0]);
 
         // 4. Dajemy czas na fizyczne przemiecenie kontrolera i zdejmujemy blokadę czasu
-        vTaskDelay(pdMS_TO_TICKS(4));
+        // 6. Czekamy na kolejne przerwanie VSYNC (potwierdzenie, że DMA skończyło wysyłać powyższą klatkę!)
+        xSemaphoreTake(vsync_sem, portMAX_DELAY);
+        xSemaphoreGive(fb_mutex);
+
         old_seconds = 111;
         is_editing_time = false;
 
@@ -990,8 +989,8 @@ void set_light_menu(void)
             draw_text_90(menu_buffer, LCD_H_RES, LCD_V_RES, txt_slider_pct, 600, 360, 100.0f, 0xFFFF);
 
             // 5. To ZOSTAJE: Rysowanie debugowania pozycji dotyku
-            draw_rectangle_90(menu_buffer, LCD_H_RES, LCD_V_RES, 10, 10, 300, 35, 0x0000);
-            show_debug_touch(touchX, touchY);
+            // draw_rectangle_90(menu_buffer, LCD_H_RES, LCD_V_RES, 10, 10, 300, 35, 0x0000);
+            // show_debug_touch(touchX, touchY);
 
             // 6. To ZOSTAJE: Synchronizacja Cache i wypchnięcie klatki przez DMA na MIPI-DSI
             esp_cache_msync((void *)menu_buffer, BUFFER_SIZE, ESP_CACHE_MSYNC_FLAG_DIR_C2M);
@@ -1347,8 +1346,8 @@ int edit_number_menu(const char *title, int title_x, int start_val, int min_val,
                 old_touchY = touchY;
 
                 // Rysujemy debuger dotyku (pole o szerokości 300 idealnie mieści się przed ramką minusa)
-                draw_rectangle_90(menu_buffer, LCD_H_RES, LCD_V_RES, 10, 10, 300, 35, 0x0000);
-                show_debug_touch(touchX, touchY);
+                // draw_rectangle_90(menu_buffer, LCD_H_RES, LCD_V_RES, 10, 10, 300, 35, 0x0000);
+                // show_debug_touch(touchX, touchY);
 
                 // Wypychamy na LCD wyłącznie gdy stan cyfr nie wymusił odświeżenia klatki
                 if (!content_changed)
@@ -1459,7 +1458,6 @@ void wyswietl_jpeg_ze_spiffs(const char *sciezka_pliku)
     printf("[JPEG_SUCCESS] Obraz %dx%d zdekompresowany i wyslany na LCD!\n", out_info.width, out_info.height);
     xSemaphoreGive(fb_mutex);
 }
-
 //=====================================================================================================
 //=====================================================================================================
 //=====================================================================================================
@@ -1576,7 +1574,7 @@ void vTaskFourHourIncrementer(void *pvParameters)
                 time(&teraz);
                 localtime_r(&teraz, &info);
 
-                if (info.tm_year >= (2026 - 1900))
+                if (ntp_read == true)
                 {
                     ostatnia_sync_udana = true;
                     licznik_4h = 0; // Sukces! Resetujemy licznik dobowy
@@ -1601,6 +1599,9 @@ void set_ntp_menu(void)
     wait_for_release();            // Czekamy na puszczenie ekranu przed wejściem do menu, aby uniknąć natychmiastowego wyzwolenia przycisku
     vTaskDelay(pdMS_TO_TICKS(50)); // Dajemy czas na fizyczne przemieszczenie kontrolera i zdejmujemy blokadę czasu
 
+    // SYNCHRONIZACJA Z DMA
+    xSemaphoreTake(vsync_sem, 0);
+    xSemaphoreTake(vsync_sem, portMAX_DELAY);
     // Czyszczenie i przygotowanie czystego bufora ekranu
     xSemaphoreTake(fb_mutex, portMAX_DELAY);
     memset(fbs[0], 0x00, 800 * 1280 * 2); // Czyszczenie na czarno (RGB565)
@@ -1616,10 +1617,10 @@ void set_ntp_menu(void)
     draw_text_90(back_buffer, LCD_H_RES, LCD_V_RES, "DONE", 510, 580, 150, 0xFFFF);
     draw_hollow_rectangle_90(back_buffer, LCD_H_RES, LCD_V_RES, 390, 600, 500, 120, 4, 0xFFFF);
 
-    xSemaphoreGive(fb_mutex);
     esp_cache_msync(fbs[0], 800 * 1280 * 2, ESP_CACHE_MSYNC_FLAG_DIR_C2M);
     xSemaphoreTake(vsync_sem, portMAX_DELAY);
     lcd.lcd_draw_bitmap(0, 0, LCD_H_RES, LCD_V_RES, (uint8_t *)fbs[0]);
+    xSemaphoreGive(fb_mutex);
     // vTaskResume(hTaskTouch); // Budzimy dotyk dedykowany dla tego menu
 
     // 👇 WYBUDZENIE PRZED PĘTLĄ WHILE 👇
@@ -1639,8 +1640,8 @@ void set_ntp_menu(void)
 
             // --- DEBUGER DOTYKU NA EKRANIE ---
             // Czyścimy mały pasek pod cyframi w lewym rogu i rysujemy koordynaty
-            draw_rectangle_90(back_buffer, LCD_H_RES, LCD_V_RES, 10, 10, 300, 35, 0x0000);
-            show_debug_touch(tx, ty);
+            // draw_rectangle_90(back_buffer, LCD_H_RES, LCD_V_RES, 10, 10, 300, 35, 0x0000);
+            // show_debug_touch(tx, ty);
 
             // 1. HIT-BOX dla przycisku START NTP (Ramka Y=300, wysokość 120 -> ty od ok. 300 do 450)
             if (tx >= 380 && tx <= 500 && ty >= 390 && ty <= 890)
@@ -1650,8 +1651,8 @@ void set_ntp_menu(void)
                     printf("[MENU NTP] -> Ręczne wywołanie synchronizacji czasu...\n");
 
                     // Czyścimy przestrzeń pomiędzy przyciskami (Y=450 do 580) na czarno pod status
-                    draw_rectangle_90(back_buffer, LCD_H_RES, LCD_V_RES, 100, 440, 1100, 150, 0x0000);
-                    draw_text_90(back_buffer, LCD_H_RES, LCD_V_RES, "SYNCHRONIZACJA...", 360, 470, 70.0f, 0xF800); // Czerwony napis
+                    draw_rectangle_90(back_buffer, LCD_H_RES, LCD_V_RES, 0, 440, 1280, 158, 0);
+                    draw_text_90(back_buffer, LCD_H_RES, LCD_V_RES, "SYNCHRONIZACJA...", 360, 480, 70.0f, 0xFfe0); // yellow? napis
 
                     // Wypychamy status na ekran przed uruchomieniem workera
                     esp_cache_msync(fbs[0], 800 * 1280 * 2, ESP_CACHE_MSYNC_FLAG_DIR_C2M);
@@ -1665,10 +1666,36 @@ void set_ntp_menu(void)
                     {
                         vTaskDelay(pdMS_TO_TICKS(50));
                     }
+                    if (ntp_read == true)
+                    {
+                        time_t now = 0;
+                        struct tm timeinfo = {};
+                        time(&now);
+                        localtime_r(&now, &timeinfo);
+                        rx8025t_time_t rtc_time;
+                        rtc_time.second = timeinfo.tm_sec;
+                        rtc_time.minute = timeinfo.tm_min;
+                        rtc_time.hour = timeinfo.tm_hour;
+                        rtc_time.day = timeinfo.tm_mday;
+                        rtc_time.month = timeinfo.tm_mon + 1;
+                        rtc_time.year = timeinfo.tm_year + 1900;
+                        rtc_time.weekday = timeinfo.tm_wday;
 
-                    // Po sukcesie: zamalowujemy stary napis i dajemy komunikat sukcesu
-                    draw_rectangle_90(back_buffer, LCD_H_RES, LCD_V_RES, 100, 440, 1100, 150, 0x0000);
-                    draw_text_90(back_buffer, LCD_H_RES, LCD_V_RES, "ZAKONCZONO SUKCESEM!", 300, 470, 70.0f, 0x07E0); // Zielony napis
+                        char buf[64]; // Bufor na gotowy tekst (64 bajty w zupełności wystarczą)
+
+                        snprintf(buf, sizeof(buf), "SUKCES NTP! %04d-%02d-%02d %02d:%02d:%02d",
+                                 rtc_time.year, rtc_time.month, rtc_time.day,
+                                 rtc_time.hour, rtc_time.minute, rtc_time.second);
+                        draw_rectangle_90(back_buffer, LCD_H_RES, LCD_V_RES, 0, 440, 1280, 158, 0);
+                        draw_rectangle_90(back_buffer, LCD_H_RES, LCD_V_RES, 0, 457, 1280, 120, 0x001f);
+                        draw_text_90(back_buffer, LCD_H_RES, LCD_V_RES, &buf[0], 140, 480, 70.0f, 0xffff);
+                    }
+                    else
+                    {
+                        draw_rectangle_90(back_buffer, LCD_H_RES, LCD_V_RES, 0, 440, 1280, 158, 0);
+                        draw_rectangle_90(back_buffer, LCD_H_RES, LCD_V_RES, 200, 457, 850, 120, 0xF100);
+                        draw_text_90(back_buffer, LCD_H_RES, LCD_V_RES, "NIEPOWODZENIE--NTP !", 300, 480, 70.0f, 0xFFFF);
+                    }
                 }
             }
 
@@ -1723,7 +1750,6 @@ void refresh_menu_self(void)
 }
 void set_ntp_and_demo_menu(void)
 {
-    uint16_t *menu_buffer = (uint16_t *)fbs[0];
     uint16_t old_tx = 9999, old_ty = 9999;
     bool exit_menu = false;
 
@@ -1741,12 +1767,12 @@ void set_ntp_and_demo_menu(void)
             old_tx = tx;
             old_ty = ty;
             xSemaphoreTake(fb_mutex, portMAX_DELAY);
-            draw_rectangle_90(menu_buffer, LCD_H_RES, LCD_V_RES, 10, 10, 300, 35, 0x0000);
-            show_debug_touch(tx, ty);
-            xSemaphoreGive(fb_mutex);
+            // draw_rectangle_90(menu_buffer, LCD_H_RES, LCD_V_RES, 10, 10, 300, 35, 0x0000);
+            // show_debug_touch(tx, ty);
             esp_cache_msync(fbs[0], 800 * 1280 * 2, ESP_CACHE_MSYNC_FLAG_DIR_C2M);
             xSemaphoreTake(vsync_sem, portMAX_DELAY);
             lcd.lcd_draw_bitmap(0, 0, LCD_H_RES, LCD_V_RES, (uint8_t *)fbs[0]);
+            xSemaphoreGive(fb_mutex);
         }
         if (global_is_touched)
         {
@@ -1780,6 +1806,8 @@ void set_ntp_and_demo_menu(void)
     wait_for_release();
     vTaskDelay(pdMS_TO_TICKS(150));
     old_seconds = 111;
+    // Upewniamy się, że żaden transfer DMA zlecony w menu nie trwa w tle
+    xSemaphoreTake(vsync_sem, pdMS_TO_TICKS(50));
 }
 //=====================================================================================================
 //=====================================================================================================
@@ -1790,6 +1818,39 @@ void run_vector_dots_demo_loop(void)
     wait_for_release();
     vTaskDelay(pdMS_TO_TICKS(200));
     start_vectordots_ball();
+}
+//=====================================================================================================
+//=====================================================================================================
+//=====================================================================================================
+void set_max_briggtness(void)
+{
+    set_brightness(100);
+}
+//=====================================================================================================
+//=====================================================================================================
+//=====================================================================================================
+void restore_brightness(void)
+{
+    uint32_t duty = 1023 * BRIGHTNESS / 100;
+    if (duty > 1023)
+    {
+        duty = 1023;
+    }
+    ledc_set_duty(BACKLIGHT_LEDC_MODE, BACKLIGHT_LEDC_CHANNEL, duty);
+    ledc_update_duty(BACKLIGHT_LEDC_MODE, BACKLIGHT_LEDC_CHANNEL);
+}
+//=====================================================================================================
+//=====================================================================================================
+//=====================================================================================================
+void set_brightness(uint8_t dana)
+{
+    uint32_t duty = 1023 * dana / 100;
+    if (duty > 1023)
+    {
+        duty = 1023;
+    }
+    ledc_set_duty(BACKLIGHT_LEDC_MODE, BACKLIGHT_LEDC_CHANNEL, duty);
+    ledc_update_duty(BACKLIGHT_LEDC_MODE, BACKLIGHT_LEDC_CHANNEL);
 }
 //=====================================================================================================
 //=====================================================================================================

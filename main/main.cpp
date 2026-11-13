@@ -150,9 +150,9 @@ extern "C" void app_main(void)
 
     // Rejestracja callbacku przerwaniowego VSYNC (on_color_trans_done dla ESP-IDF 5.5.3)
     // NOWA, IDEALNIE CZYSTA WERSJA (kompilator to pokocha):
-    esp_lcd_dpi_panel_event_callbacks_t cbs = {};   // Wyzerowanie wszystkich pól struktury
-    cbs.on_color_trans_done = on_frame_complete_cb; // Przypisanie naszego przerwaniowego callbacku
-
+    esp_lcd_dpi_panel_event_callbacks_t cbs = {}; // Wyzerowanie wszystkich pól struktury
+    // cbs.on_color_trans_done = on_frame_complete_cb; // Przypisanie naszego przerwaniowego callbacku
+    cbs.on_refresh_done = on_frame_complete_cb;
     esp_lcd_dpi_panel_register_event_callbacks(dpi_handle, &cbs, NULL);
 
     // Alokacja dwóch buforów w PSRAM z wyrównaniem do linii Cache (64 bajty)
