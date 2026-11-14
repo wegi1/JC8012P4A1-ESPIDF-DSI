@@ -26,7 +26,7 @@
 #include "pins_config.h"
 #include "rx8025t.h"
 #include "wifi_ntp.hpp" // Potrzebne do synchronizacji NTP
-
+#include "wifi_portal.hpp"
 #include "vectordotsball.hpp"
 //=====================================================================================================
 
@@ -1734,14 +1734,21 @@ void refresh_menu_self(void)
     xSemaphoreTake(fb_mutex, portMAX_DELAY);
     memset(fbs[0], 0x00, 800 * 1280 * 2);
     // Linia pionowa dzielaca ekran na pol przy X=640
-    draw_rectangle_90(menu_buffer, LCD_H_RES, LCD_V_RES, 638, 0, 4, 400, 0xFFFF);
-    draw_hollow_rectangle_90(menu_buffer, LCD_H_RES, LCD_V_RES, 0, 0, 1276, 400, 4, 0xFFFF);
+    draw_rectangle_90(menu_buffer, LCD_H_RES, LCD_V_RES, 638, 0, 4, 800, 0xFFFF);
+    draw_hollow_rectangle_90(menu_buffer, LCD_H_RES, LCD_V_RES, 0, 0, 1276, 796, 4, 0xFFFF);
+    draw_hollow_rectangle_90(menu_buffer, LCD_H_RES, LCD_V_RES, 0, 398, 1276, 1, 2, 0xFFFF);
+
     draw_hollow_rectangle_90(menu_buffer, LCD_H_RES, LCD_V_RES, 70, 140, 500, 120, 4, 0x07E0);
-    draw_text_90(menu_buffer, LCD_H_RES, LCD_V_RES, "NTP", 270, 150, 100.0f, 0x07E0);
+    draw_text_90(menu_buffer, LCD_H_RES, LCD_V_RES, "NTP", 250, 145, 100.0f, 0x07E0);
     draw_hollow_rectangle_90(menu_buffer, LCD_H_RES, LCD_V_RES, 710, 140, 500, 120, 4, 0xF100);
-    draw_text_90(menu_buffer, LCD_H_RES, LCD_V_RES, "DEMO", 890, 150, 100.0f, 0xF100);
-    draw_hollow_rectangle_90(menu_buffer, LCD_H_RES, LCD_V_RES, 390, 600, 500, 120, 4, 0xFFFF);
-    draw_text_90(menu_buffer, LCD_H_RES, LCD_V_RES, "DONE", 510, 580, 150.0f, 0xFFFF);
+    draw_text_90(menu_buffer, LCD_H_RES, LCD_V_RES, "DEMO", 870, 145, 100.0f, 0xF100);
+
+    draw_hollow_rectangle_90(menu_buffer, LCD_H_RES, LCD_V_RES, 710, 500, 500, 120, 4, 0xFFFF);
+    draw_text_90(menu_buffer, LCD_H_RES, LCD_V_RES, "DONE", 830, 480, 150.0f, 0xFFFF);
+
+    draw_hollow_rectangle_90(menu_buffer, LCD_H_RES, LCD_V_RES, 70, 500, 500, 120, 4, 0x07FF);
+    draw_text_90(menu_buffer, LCD_H_RES, LCD_V_RES, "WiFi", 190, 490, 140.0f, 0x07FF);
+
     esp_cache_msync(fbs[0], 800 * 1280 * 2, ESP_CACHE_MSYNC_FLAG_DIR_C2M);
     xSemaphoreTake(vsync_sem, portMAX_DELAY);
     lcd.lcd_draw_bitmap(0, 0, LCD_H_RES, LCD_V_RES, (uint8_t *)fbs[0]);
@@ -1754,6 +1761,8 @@ void set_ntp_and_demo_menu(void)
     bool exit_menu = false;
 
     refresh_menu_self();
+    vTaskDelay(pdMS_TO_TICKS(300));
+    global_is_touched = false;
 
     if (hTaskHardwareTouchDriver != NULL)
     {
@@ -1792,10 +1801,38 @@ void set_ntp_and_demo_menu(void)
                 run_vector_dots_demo_loop();
             }
             // Obsluga przycisku DONE (wyjscie na dolnym pasku)
-            if (tx >= 80 && tx <= 200 && ty >= 400 && ty <= 900)
+            if (tx >= 180 && tx <= 300 && ty >= 710 && ty <= 1210)
             {
                 printf("[MENU NTP] -> Kliknieto DONE. Powrot.\n");
                 exit_menu = true;
+            }
+
+            // Obsluga przycisku WiFi (wyjscie na dolnym pasku)
+            if (tx >= 180 && tx <= 300 && ty >= 70 && ty <= 570)
+            {
+                start_wifi_portal();
+                uint16_t *menu_buffer = (uint16_t *)fbs[0];
+                xSemaphoreTake(fb_mutex, portMAX_DELAY);
+                memset(fbs[0], 0x00, 800 * 1280 * 2);
+                draw_text_90(menu_buffer, LCD_H_RES, LCD_V_RES, "AP: ESP32-CLOCK-SETUP", 100, 150, 75.0f, 0x07FF);
+                draw_text_90(menu_buffer, LCD_H_RES, LCD_V_RES, "URL: http://192.168.4.1", 100, 270, 75.0f, 0x07E0);
+                draw_hollow_rectangle_90(menu_buffer, LCD_H_RES, LCD_V_RES, 710, 500, 500, 120, 4, 0xF100);
+                draw_text_90(menu_buffer, LCD_H_RES, LCD_V_RES, "CANCEL", 790, 495, 110.0f, 0xF100);
+                esp_cache_msync(fbs[0], 800 * 1280 * 2, ESP_CACHE_MSYNC_FLAG_DIR_C2M);
+                xSemaphoreTake(vsync_sem, portMAX_DELAY);
+                lcd.lcd_draw_bitmap(0, 0, LCD_H_RES, LCD_V_RES, (uint8_t *)fbs[0]);
+                xSemaphoreGive(fb_mutex);
+                wait_for_release();
+                while (is_wifi_portal_active())
+                {
+                    if (global_is_touched && global_touchX >= 180 && global_touchX <= 300 && global_touchY >= 710 && global_touchY <= 1210)
+                    {
+                        stop_wifi_portal();
+                        break;
+                    }
+                    vTaskDelay(pdMS_TO_TICKS(30));
+                }
+                refresh_menu_self();
             }
         }
         vTaskDelay(pdMS_TO_TICKS(15));
@@ -1852,6 +1889,10 @@ void set_brightness(uint8_t dana)
     ledc_set_duty(BACKLIGHT_LEDC_MODE, BACKLIGHT_LEDC_CHANNEL, duty);
     ledc_update_duty(BACKLIGHT_LEDC_MODE, BACKLIGHT_LEDC_CHANNEL);
 }
+//=====================================================================================================
+//=====================================================================================================
+//=====================================================================================================
+
 //=====================================================================================================
 //=====================================================================================================
 //=====================================================================================================

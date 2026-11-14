@@ -6,6 +6,7 @@ idf_component_register(
         "rx8025t.c"
         "wifi_ntp.cpp"
         "vectordotsball.cpp"
+        "wifi_portal.cpp"
     INCLUDE_DIRS 
         "."
         "fonts"
@@ -23,6 +24,7 @@ idf_component_register(
         lwip
         spiffs
         esp_new_jpeg
+        esp_http_server 
 )
 
-#spiffs_create_partition_image(storage "${CMAKE_CURRENT_LIST_DIR}/../FOTOS" FLASH_IN_PROJECT)
+spiffs_create_partition_image(storage "${CMAKE_CURRENT_LIST_DIR}/../FOTOS" FLASH_IN_PROJECT)

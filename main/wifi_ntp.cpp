@@ -111,41 +111,11 @@ void vTaskNtpSyncWorker(void *pvParameters)
         return;
     }
 
-    // strcpy(ssid, "BAD_SSID");
-    // 2. Jednorazowa inicjalizacja stosu sieciowego (nigdy nie powtarzana przy kolejnych próbach!)
-    if (!s_wifi_stack_initialized)
+    if (!ensure_wifi_stack_initialized())
     {
-        esp_err_t err = esp_netif_init();
-        if (err != ESP_OK && err != ESP_ERR_INVALID_STATE)
-        {
-            ESP_LOGE(TAG, "Blad esp_netif_init: %s", esp_err_to_name(err));
-            s_sync_in_progress = false;
-            vTaskDelete(NULL);
-            return;
-        }
-
-        err = esp_event_loop_create_default();
-        if (err != ESP_OK && err != ESP_ERR_INVALID_STATE)
-        {
-            ESP_LOGE(TAG, "Blad event_loop: %s", esp_err_to_name(err));
-            s_sync_in_progress = false;
-            vTaskDelete(NULL);
-            return;
-        }
-
-        esp_netif_create_default_wifi_sta();
-
-        wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
-        err = esp_wifi_init(&cfg);
-        if (err != ESP_OK)
-        {
-            ESP_LOGE(TAG, "Blad esp_wifi_init: %s", esp_err_to_name(err));
-            s_sync_in_progress = false;
-            vTaskDelete(NULL);
-            return;
-        }
-
-        s_wifi_stack_initialized = true;
+        s_sync_in_progress = false;
+        vTaskDelete(NULL);
+        return;
     }
 
     s_wifi_event_group = xEventGroupCreate();
@@ -280,4 +250,39 @@ void start_ntp_sync_task_async(void)
         ESP_LOGE(TAG, "Nie udalo sie utworzyc zadania NtpSyncTask!");
         s_sync_in_progress = false;
     }
+}
+
+bool ensure_wifi_stack_initialized(void)
+{
+    // strcpy(ssid, "BAD_SSID");
+    // 2. Jednorazowa inicjalizacja stosu sieciowego (nigdy nie powtarzana przy kolejnych próbach!)
+    if (!s_wifi_stack_initialized)
+    {
+        esp_err_t err = esp_netif_init();
+        if (err != ESP_OK && err != ESP_ERR_INVALID_STATE)
+        {
+            ESP_LOGE(TAG, "Blad esp_netif_init: %s", esp_err_to_name(err));
+            return false;
+        }
+
+        err = esp_event_loop_create_default();
+        if (err != ESP_OK && err != ESP_ERR_INVALID_STATE)
+        {
+            ESP_LOGE(TAG, "Blad event_loop: %s", esp_err_to_name(err));
+            return false;
+        }
+
+        esp_netif_create_default_wifi_sta();
+
+        wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
+        err = esp_wifi_init(&cfg);
+        if (err != ESP_OK)
+        {
+            ESP_LOGE(TAG, "Blad esp_wifi_init: %s", esp_err_to_name(err));
+            return false;
+        }
+
+        s_wifi_stack_initialized = true;
+    }
+    return true;
 }
